@@ -526,7 +526,20 @@ the default value of its type (and no declaration when there is none)."
                  (end (%ls s 11))
                  (first (%ls s 12))
                  (result (%ls s 7))
-                 (type-decls nil))
+                 (type-decls nil)
+                 (pre (reverse (%ls s 2)))
+                 (once nil))
+            ;; The termination tests at the head of the PRE forms that are
+            ;; made again right after their steps (those of FOR over a
+            ;; list, a vector or numbers) are made before the first
+            ;; iteration only: nothing is evaluated between the test
+            ;; after the step and the head of the next iteration.  (Not
+            ;; with a FOR = clause, whose step is among the PRE forms.)
+            (unless (%ls s 16)
+              (do () ((not (and pre (consp (car pre)) (eq (car (car pre)) 'when)
+                                (equal (cddr (car pre)) `((go ,end)))
+                                (member (car pre) (%ls s 4) :test #'equal))))
+                (setq once (cons (car pre) once) pre (cdr pre))))
             `(block ,name
                (let* (,@(progn (setq type-decls (%loop-type-declarations s)) (reverse (%ls s 1)))
                       ,@(when first `((,first t))))
@@ -534,8 +547,9 @@ the default value of its type (and no declaration when there is none)."
                  (macrolet ((loop-finish () '(go ,end)))
                  (tagbody
                     ,@(reverse (%ls s 5))
+                    ,@(reverse once)
                     ,top
-                    ,@(reverse (%ls s 2))
+                    ,@pre
                     ,@(reverse (%ls s 3))
                     ,@(when first `((setq ,first nil)))
                     ,@(reverse (%ls s 4))

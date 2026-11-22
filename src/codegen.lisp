@@ -1335,7 +1335,7 @@ BINDINGS, a list of (symbol . local holding the new value), in order."
 representation), :effect (no value) or :test (an i32 that is 0 for false,
 as CG-TEST; only without special variables)."
   (destructuring-bind (bindings body) (cdr node)
-    (let ((code nil) (specials nil))
+    (let ((code nil) (specials nil) (shadows0 *tested-shadows*))
       ;; evaluate inits in order
       (dolist (b bindings)
         (let ((lv (car b)) (init (cdr b)))
@@ -1418,9 +1418,24 @@ as CG-TEST; only without special variables)."
                      (t (cg-rep body rep)))))
         (if (null specials)
             (let ((lv (md2-version-var bindings body rep)))
-              (if lv
-                  (append code (md2-version-code lv rep #'body-code tail))
-                  (append code (body-code tail))))
+              (cond (lv (append code (md2-version-code lv rep #'body-code tail)))
+                    ;; (variables declared of a structure type: two arms
+                    ;; for their shadows, typed.lisp)
+                    ((and (not (eq *tested-shadows* shadows0))
+                          (not (consp rep)) (not (member rep '(:c64 :c32))))
+                     (let ((shadows (loop for l on *tested-shadows* until (eq l shadows0)
+                                          when (and (assoc (first (car l)) bindings) (>= (lvar-refs (first (car l))) 2))
+                                            collect (car l)))
+                           (body-code (body-code tail)))
+                       (if (or (null shadows) (> (code-size body-code) *shadow-version-max*))
+                           (append code body-code)
+                           (let ((inits (loop for e in shadows append (fifth e))))
+                             ;; (the tests of the shadows are made by the arms)
+                             (append (remove-if (lambda (i) (member i inits :test #'eq)) code)
+                                     (shadow-version-code
+                                      (reverse shadows) (loop for e in (reverse shadows) append (fifth e)) body-code
+                                      (case rep (:effect nil) (:test :i32) (t (rep-block-type rep)))))))))
+                    (t (append code (body-code tail)))))
             (let ((saved (new-local :i32)) (res (unless (or (eq rep :effect) (consp rep)) (new-rep-local rep))))
               (setf specials (loop for (lv . tmp) in (reverse specials) collect (cons (lvar-name lv) tmp)))
               (append code
@@ -3292,7 +3307,19 @@ list of (symbol . local), which are bound around the body."
                   (:local.set ,res)
                   ,@(unbind-specials-code saved (mapcar #'car specials))
                   (:local.get ,res))))
-      `(,@prologue ,@(let ((*tail-ok* t)) (cg (lam-body lam) t t)))))
+      (let* ((body (let ((*tail-ok* t)) (cg (lam-body lam) t t)))
+             ;; (parameters declared of a structure type: two arms for
+             ;; their shadows, as a LET's, typed.lisp)
+             (shadows (loop for e in *tested-shadows* repeat 32
+                            when (and (member (first (fifth e)) prologue :test #'eq)
+                                      (>= (lvar-refs (first e)) 2))
+                              collect e)))
+        (if (or (null shadows) (> (code-size body) *shadow-version-max*))
+            `(,@prologue ,@body)
+            (let ((inits (loop for e in shadows append (fifth e))))
+              `(,@(remove-if (lambda (i) (member i inits :test #'eq)) prologue)
+                ,@(shadow-version-code (reverse shadows) (loop for e in (reverse shadows) append (fifth e))
+                                       body :eqref)))))))
 
 (defun compile-lam (lam &aux (*catching-tag* nil))
   (inline-calls lam)
