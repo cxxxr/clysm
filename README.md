@@ -221,7 +221,8 @@ and a redefinition of a function (at the REPL, by `trace`) is seen by the
 other files. It falls back to fasls of each file for a system:
 * **being developed**: when a file of a system changed after its system fasl
   was made, the system is compiled file by file from then on (an edit
-  compiles that file, not the whole system); `(asdf::clysm-system-fasl-reset
+  compiles that file, not the whole system; the first edit compiles every
+  file once, as there are no fasls of its files yet); `(asdf::clysm-system-fasl-reset
   "name")` makes it a system fasl again;
 * whose files are not plain Lisp source files, or that has around-compile
   hooks, or whose code has objects a fasl cannot hold, or a file of which
