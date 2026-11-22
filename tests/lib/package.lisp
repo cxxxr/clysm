@@ -150,3 +150,8 @@ export type Places = Place[];" :entry "places")
              (lambda (text start end)
                (js:call (js:global "JSON") "parse" (js:call-raw text "slice" start end)))
              :raw t :type "(text: string, start: number, end: number) => unknown"))
+(js:export "awaitKind"
+           (lambda (promise) (string-downcase (symbol-name (js:typeof (js:await-raw promise)))))
+           :async t :type "(promise: Promise<unknown>) => Promise<string>")
+(js:export "awaitLisp" (lambda () (js:await-raw (js:async (lambda () 42)))) :async t
+           :type "() => Promise<number>")

@@ -12,7 +12,7 @@
            "JS-ERROR" "JS-ERROR-VALUE" "JS-ERROR-NAME" "JS-ERROR-MESSAGE" "EXPORT"
            "MODULE" "REQUIRE" "IMPORT" "TO-OCTETS" "FROM-OCTETS"
            "THROW" "DEFINE-CLASS" "DECLARE-TYPES" "LIBRARY-OPTIONS"
-           "GET-RAW" "CALL-RAW" "FUNCALL-RAW" "RAW-FUNCTION"))
+           "GET-RAW" "CALL-RAW" "FUNCALL-RAW" "RAW-FUNCTION" "AWAIT-RAW"))
 
 (defun js:js-value-p (x) (%foreignp x))
 
@@ -433,6 +433,14 @@ cannot wait: JS:CAN-AWAIT-P is false.)"
   "Wait until the JavaScript PROMISE is settled; return its value, or
 signal an error if it is rejected.  Meanwhile JavaScript runs, and may call
 Lisp functions or start or resume other computations."
+  (%js-await-settled promise nil))
+
+(defun js:await-raw (promise)
+  "JS:AWAIT, giving the value as JavaScript has it (see JS:GET-RAW); the value
+of a computation of JS:ASYNC is its Lisp value all the same."
+  (%js-await-settled promise t))
+
+(defun %js-await-settled (promise raw)
   (unless (js:can-await-p)
     (if (%js-suspending-p)
         (error "JS:AWAIT cannot wait here: not in a function of JS:ASYNC-FUNCTION (or JavaScript is in between)")
@@ -443,7 +451,11 @@ Lisp functions or start or resume other computations."
     (%suspend-computation computation)
     (let ((result (%js-await promise)))
       (%resume-computation computation)
-      (%js-async-value (%js-result result)))))
+      (if raw
+          (let ((value (%js-result-raw result)))
+            ;; (a Lisp value, of JS:ASYNC: as JS:AWAIT gives it)
+            (if (eql (%js-typeof value) 9) (%js-async-value (js:to-lisp value)) value))
+          (%js-async-value (%js-result result))))))
 
 (defun js:async (function &rest args)
   "Start FUNCTION (applied to ARGS) as a computation of its own that may
