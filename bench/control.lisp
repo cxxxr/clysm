@@ -328,7 +328,7 @@
 (defbench t-return-maphash (10)
   (let ((s 0) (h (make-hash-table)))
     (dotimes (i 8) (setf (gethash i h) (* i i)))
-    (dotimes (i 100000)
+    (dotimes (i 1000000)
       (let ((k (logand i 7)))
         (incf s (block found (maphash (lambda (key v) (when (eql key k) (return-from found v))) h) 0))))
     s))

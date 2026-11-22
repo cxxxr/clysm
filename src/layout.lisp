@@ -265,6 +265,7 @@ that UPGRADED-ARRAY-ELEMENT-TYPE makes it T."
     (:ii-e      (:func (:i32 :i32) (:eqref)))
     (:eeii-i    (:func (:eqref :eqref :i32 :i32) (:i32)))
     (:eieii-i   (:func (:eqref :i32 :eqref :i32 :i32) (:i32)))
+    (:eeeeeei-i (:func (:eqref :eqref :eqref :eqref :eqref :eqref :i32) (:i32)))
     ;; numeric helpers (prims.lisp)
     (:d-e       (:func (:f64) (:eqref)))
     (:ll-e      (:func (:i64 :i64) (:eqref)))

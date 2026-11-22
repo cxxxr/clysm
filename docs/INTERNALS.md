@@ -4716,6 +4716,171 @@ What makes the code fast:
   (as `(char-code (schar s i))` already is), most of the cost would go
   and the change would be worth measuring again.
 
+* **Library functions slower than SBCL, item by item (2026-11-23).** The
+  items of `bench/library.lisp` and `bench/programs.lisp` still above SBCL
+  were each split into a probe per form (the same form in a loop, SBCL and
+  Clysm), which finds the slow function at once; the causes and what was
+  done:
+  - *String comparisons on codes.* `string=`, `string-equal`, `string<`
+    and the eight others, `equal` of a string that is not simple and
+    `equalp` of strings are two Wasm helpers (`:string-eq-gen`,
+    `:string-compare-gen` in `src/prims.lisp`) that take the two
+    designators and the four bounds as they are: a simple string, a
+    header right over a simple string (a fill pointer, adjustable,
+    displaced) or a symbol gives its storage, offset and length
+    (`string-data-code`), the bounds are checked (`string-bounds-code`),
+    and the loop compares the i32 codes of the two storages, folding the
+    case of ASCII letters in place. They answer -1 for what they do not
+    decide (another designator, bounds to signal, two characters beyond
+    ASCII that differ when case is ignored) and the Lisp function
+    (`%string-eq-slow`, `%string-compare-slow`: the general loop only)
+    does then. Before, only two simple strings had a loop of fixnum
+    operations (a character object made and taken apart per character),
+    and a string with a fill pointer took `%array-storage`,
+    `%array-total-offset`, `length` and `%check-bounds` as calls. Probes
+    (ms, before → after, SBCL): `string=` of a simple string and one
+    with a fill pointer 89 → 27 (27), `string>=` with `:start1`/`:start2`
+    69 → 24 (33), `string/=` 81 → 29 (49), `string-equal` 53 → 26 (31),
+    `string-lessp` with `:end1`/`:end2` 61 → 30 (67), `string<` 42 → 27
+    (40). `v-string-compare` 1.31 → 0.69.
+  - *Packages named by constants.* `find-package` kept one name (the last
+    symbol looked up); `(intern name :keyword)`, `(find-symbol name
+    "VP2")` and `(find-package :vp1)` in one loop hashed the name each
+    time (22 ns; SBCL 1). `find-package` of a string, a keyword or a
+    quoted symbol, and such a package argument of `find-symbol` and
+    `intern`, now keep the package in a cons made at load time where the
+    call is written (`%find-package-cached`, runtime/package.lisp), valid
+    while `*%package-epoch*` (counted by every change of the table of
+    package names) is the same and no package has local nicknames.
+    `find-package` 44 → 4 ms for 2 million, `find-symbol` with a package
+    name 75 → 47 (SBCL 54); `v-intern-packages` 1.29 → 1.02, `p-symbols`
+    1.22 → 0.96.
+  - *SUBSTITUTE.* It found the length of a list, copied it and walked the
+    copy (three walks), and with `:count` made a vector of marks as long
+    as the sequence (a large object for 20000 elements) and copied the
+    sequence. A fresh list is now made in one walk, a vector is copied
+    and replaced in place, last element first for `:from-end`, counting
+    down `:count`; only a list read from its end still marks first.
+    `substitute` of a list 79 → 35 ms (SBCL 53), `substitute-if` with
+    `:count` on a vector 57 → 16 (38), `nsubstitute :from-end :count` of
+    a string 69 → 35 (39); `v-substitute` 1.22 → 0.91.
+  - *Lists read from the end* (`find`, `position`, `count`, `reduce`
+    with `:from-end`, through `%do-region`). The length was found (a
+    walk), the region copied to one vector (another, and 40 KB of new
+    memory for 5000 elements) and the vector read backwards. The region
+    is now copied in one walk into vectors of 64 (`%list-chunks`), read
+    last first; a list read to its end is not measured first.
+    `position :from-end :key` 57 → 40 ms (SBCL 39-42), `find-if
+    :from-end :key` 47 → 29 (58-60); `count-if-not :from-end :key` 121 →
+    105 (68-71: the copy is still 2/3 of it; SBCL reverses the list).
+    Tried and not kept: the last match of a walk forwards for `find` and
+    `position` (the order of the calls is not specified for them): it
+    calls the test on every element, and was slower than the copy
+    wherever the match is near the end (`find-if :from-end` 47 → 128);
+    blocks of 32 conses kept and each block copied to a scratch vector
+    when it is read (the conses are read twice: `count-if-not` 121 →
+    159).
+  - *Copies of sequences.* `fill` of a vector is `array.fill`
+    (`%storage-fill`), `replace` of a vector onto itself `array.copy`
+    (which allows the overlap), `reverse`/`nreverse` of simple vectors
+    and strings read and write the storage without the dispatch on its
+    kind, `coerce` of a vector or a string to a list and `concatenate` of
+    lists and simple vectors likewise; `%array-storage` and
+    `%array-total-offset` answer for a header right over its storage
+    without a second call. Probes (20000 elements, 500 times): `replace`
+    onto itself 9 → 1 ms (SBCL 4), `nreverse` of an adjustable vector 10
+    → 5 (4), `reverse` 25-26 → 17-20 (14-24), `coerce` of a simple vector
+    to a list 161 → 96 (84-94). What is left of `v-seq-copying` (1.24 →
+    1.09) is the allocation: a vector of 20000 elements is 160 KB, a
+    large object for V8 (`copy-seq` 16-18 ms against 8, `concatenate` to
+    a vector 71 against 54-57), as strings beyond 32 768 characters are.
+    `(coerce (list ...) 'vector)` is `(vector ...)` and `(coerce "a"
+    'character)` the character: `p-coerce` 2.10 → 1.35 (what is left
+    there: SBCL removes the three allocations it can see through).
+  - *A structure predicate of an object that is no instance* (NIL, a
+    number, a list, a string: what `(when (node-p x) ...)` is given most
+    of the time) called the helper `:struct-typep`, which then found it
+    was no instance; it is now told apart at the call site by the test
+    of `$instance`. A list of mixed objects 69 → 56 ms for 33 million
+    tests. Testing `$instance` first (one supertype) instead of the type
+    of N field slots: a string 1.6 → 1.4 ns, a structure of the type
+    1.5 → 2.0; not kept.
+  - *Not gained, with the reason.*
+    `v-typecase-deftype`, `p-typecase`, `p-typep-misc` (1.23-1.30): the
+    code is already one kind code per object (`%type-code`: at most
+    eleven `ref.test`, each a map compare for the final types) and a
+    bit test per clause; the tests of a loop of `(typep x 'node)` over
+    non-instances cost 1.0-1.6 ns against SBCL's 0.45 (a lowtag test, and
+    a jump table over widetags for `typecase`), and Wasm has no way to
+    read an object's type but `ref.test` (ordering the kinds by the
+    clauses moves the cost between kinds: floats 7 → 3 tests, conses 3 →
+    8).
+    `v-map-every` (1.35) and `v-find-list-key` (1.19) are at or below
+    SBCL once warm (200 repetitions instead of 10: 1.11 and 0.93): every
+    form of `v-map-every` in a loop of its own is 0.2-0.5 of SBCL, whose
+    10 repetitions are short enough to be run mostly before the tier-up
+    (see Tiering of the engine); SBCL's `map` there is specialized on
+    the types it derives for the `let*` variables (4 times its speed
+    when the sequences come from special variables).
+    `v-hash-iterate` (1.25-1.43, 9 ms): `maphash`, `loop` and
+    `with-hash-table-iterator` are already loops over the key and value
+    vectors (1.2-1.8 ns an entry, SBCL 1.1-1.3: two bounds-checked reads
+    and the test of the deleted marker); the index of `loop`'s scan is
+    now an i32 (a rule of the type inference for `%ht-scan-prim`), within
+    the noise. `t-return-maphash` was 3 against 6 ms (the timer's
+    resolution); with ten times the work (`bench/control.lisp` now) it is
+    33 against 52 ms, 1.6: 5.5 ns for a `maphash` left by `return-from`
+    after 4.5 entries on average, of which the entry to the loop (the
+    class test, two vectors, the fill count, the marker) is 3.
+    `v-equalp-mixed`, `p-equal` (1.24): `equalp` of strings now uses the
+    helper above (equal strings of 11 characters 42 ms for 3 million,
+    SBCL 44-47); the rest is calls (`equalp` of a structure 66 against
+    45: the helper calls `equalp` for each pair of fields that are not
+    `eq`; `equal` of a list of six objects 53 against 28: a call for
+    each element that is a string, a list or a float; settling strings
+    and doubles in the loop made it slower, 53 → 70, the function no
+    longer fitting V8's inlining of the recursive call).
+    The libraries (`l-babel` 1.4, `l-alexandria-utils` 1.3,
+    `l-split-sequence` 1.2): profiles are flat. Babel: its decoders and
+    encoders are already i32 loops with inline array access (the Wasm
+    was read); `concatenate` and `make-string` of the 330 000 characters
+    and the two octet vectors are 0.6 of its 2.1 ms a run, the fresh
+    pages of large objects (see the design note above). split-sequence
+    and Alexandria: `subseq` (12 ns a token), the closure called per
+    character, conses (`hash-table-alist`) and `length` of lists just
+    made; the same forms compiled as a whole program are 0.45-0.8 of SBCL
+    (`position` with `:start`, `:key`, `:test` in a loop 0.45,
+    `position-if` 0.73, `subseq` 0.81) and 1.2-1.4 times that when
+    loaded into the image: each call of a function of the runtime from
+    a library's module is a `call_ref` through the symbol's function
+    (five dependent loads, no inlining; see "V8 inlines no call into
+    another module"), about 2.3 ns a call. Keyword arguments are not the
+    cost (the call passes them in the slots of the function's keyed
+    entry when its layout matches).
+  Measured (`tools/bench.sh`, the build before and after alternately on
+  one slot, the best of two rounds of three runs, against SBCL):
+  `bench/library.lisp` 0.75 → 0.71 (`v-string-compare` 1.31 → 0.69,
+  `v-substitute` 1.22 → 0.91, `v-coerce-seq` 1.25 → 1.00,
+  `v-intern-packages` 1.29 → 1.02, `v-seq-copying` 1.24 → 1.09),
+  `bench/programs.lisp` 0.78 → 0.79 (`p-coerce` 2.10 → 1.35, `p-symbols`
+  1.22 → 0.96; the other items within ±8% both ways, as two runs of one
+  build are), `bench/control.lisp` 0.745 → 0.725, `bench/suite.lisp` 0.725
+  → 0.71 and `bench/io.lisp` 0.72 → 0.69 (one round); in a script
+  (`MODE=script`) `library` takes 0.92 of its time before
+  (`v-string-compare` 84 → 45 ms, `v-substitute` 102 → 67,
+  `v-intern-packages` 192 → 153) and `programs` the same (1.12 → 1.115 of
+  the compiled file, four rounds); `tools/bench-libs.sh` 1.02 → 1.03 and
+  `bench/apps.lisp` 1.19 → 1.20 (two rounds: unchanged, their time is not
+  in these functions); Lem's actions (`tools/bench-lem.sh`, two rounds)
+  1.047 → 1.009, each of the nine 1-7% faster (`l-type-indent` 45 → 42
+  ms, `l-forms-forward` 146 → 138, `l-search` 19 → 18). The REPL image is 21 KB larger (8,875,825 →
+  8,896,821 bytes; the two helpers, the chunked loop of `%do-region`'s
+  six uses), the module of one export 6.9 KB (925,558 → 932,435; the
+  general loops of the string comparisons had been 28 KB with their
+  typed copies while they still held the loops for simple strings, which
+  the helpers replace).
+
+
 ### Declared code, and SBCL at its best policy
 
 The files above are undeclared code at SBCL's default policy, where SBCL

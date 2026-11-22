@@ -3132,11 +3132,19 @@ sums LO (low halves) and HI (high halves)."
                   (:if nil :i32 ((:i32.const 1))
                        ,(sinst-inherits-check-code s ty cl (struct-depth-index n)
                                                    `((:local.get ,o) (:local.get ,cl) (:call :struct-typep)))))
-                 ;; a structure of fewer field slots is not one; an instance
-                 ;; of a structure of a slot vector including it may be
-                 ((:local.get ,o) (:ref.test :si1)
-                  ;; (rare: out of line)
-                  (:if nil :i32 ((:i32.const 0)) ((:local.get ,o) (:local.get ,cl) (:call :struct-typep))))))))))
+                 ;; an object that is no instance (NIL, a number, a list: the
+                 ;; usual argument of a predicate that is not of the
+                 ;; structure; it called the helper) and a structure of fewer
+                 ;; field slots are not one; an instance of a structure of a
+                 ;; slot vector including it may be.  (Testing $instance
+                 ;; first, a shallower type, was measured: a string 1.6 ->
+                 ;; 1.4 ns, but a structure of the type 1.5 -> 2.0.)
+                 ((:local.get ,o) (:ref.test :instance)
+                  (:if nil :i32
+                       ((:local.get ,o) (:ref.test :si1)
+                        ;; (rare: out of line)
+                        (:if nil :i32 ((:i32.const 0)) ((:local.get ,o) (:local.get ,cl) (:call :struct-typep))))
+                       ((:i32.const 0))))))))))
 
 ;; (when src/typed.lisp does not compile them: the interpreter's functions)
 (defprim clysm-sys::%make-tstruct :any :value
@@ -4056,6 +4064,123 @@ not a string (left to EQUAL)."
   '(:i32.const 1))
 (defprim clysm-sys::%string-region= (a ai b bi n) :test
   `(,@a ,@(idx-code ai) ,@b ,@(idx-code bi) ,@(idx-code n) (:call :string-region=)))
+
+;;; String comparisons of any strings and bounds (STRING=, STRING-EQUAL,
+;;; STRING<, ... and EQUALP of strings): the characters are compared as the
+;;; i32 codes of the storage, without a character object for each.
+(defun string-data-code (x d off len fail)
+  "Helper-body code: for the string designator in the parameter X (a simple
+string, an array header right over a simple string: a string with a fill
+pointer, adjustable or displaced, or a symbol: its name) set the locals D to
+the simple string of its characters, OFF to where they start in it and LEN
+to their number; else branch to FAIL.  Uses the local M."
+  `((:block got nil
+      (:block hdr nil
+        (:local.get ,x) (:ref.test :string) :i32.eqz (:br_if hdr)
+        (:local.get ,x) (:ref.cast! :string) (:local.tee ,d) :array.len (:local.set ,len)
+        (:i32.const 0) (:local.set ,off) (:br got))
+      (:block sym nil
+        (:local.get ,x) (:ref.test :mdarray) :i32.eqz (:br_if sym)
+        (:local.get ,x) (:ref.cast! :mdarray) (:local.tee m) (:struct.get :mdarray 0) (:ref.test :string)
+        :i32.eqz (:br_if ,fail)
+        (:local.get m) (:struct.get :mdarray 0) (:ref.cast! :string) (:local.set ,d)
+        (:local.get m) (:struct.get :mdarray 3) (:ref.test :i31) :i32.eqz (:br_if ,fail)
+        (:local.get m) (:struct.get :mdarray 3) (:ref.cast! :i31) :i31.get_s (:local.set ,off)
+        (:local.get m) (:struct.get :mdarray 1) (:ref.test :i31)
+        (:if nil nil
+             ((:local.get m) (:struct.get :mdarray 1) (:ref.cast! :i31) :i31.get_s (:local.set ,len))
+             ;; (the dimension of a vector; 0 for another rank too: left to FAIL)
+             ((:local.get m) (:struct.get :mdarray 7) (:local.tee ,len) :i32.eqz (:br_if ,fail)))
+        (:local.get ,off) (:local.get ,len) :i32.add (:local.get ,d) :array.len :i32.gt_u (:br_if ,fail)
+        (:br got))
+      (:local.get ,x) (:ref.test :symbol) :i32.eqz (:br_if ,fail)
+      (:local.get ,x) (:ref.cast! :symbol) (:struct.get :symbol ,+sym-name+) (:ref.test :string) :i32.eqz (:br_if ,fail)
+      (:local.get ,x) (:ref.cast! :symbol) (:struct.get :symbol ,+sym-name+) (:ref.cast! :string)
+      (:local.tee ,d) :array.len (:local.set ,len)
+      (:i32.const 0) (:local.set ,off))))
+(defun string-bounds-code (start end off len b e fail)
+  "Helper-body code: for the bounding indices in the parameters START and END
+(a fixnum; a fixnum or NIL) of a string of LEN characters from OFF (locals),
+set the locals B and E to the indices of the region in the storage; else
+branch to FAIL.  (A character is an i31 beyond any length.)"
+  `((:local.get ,start) (:ref.test :i31) :i32.eqz (:br_if ,fail)
+    (:local.get ,start) (:ref.cast! :i31) :i31.get_s (:local.tee ,b) (:local.get ,len) :i32.gt_u (:br_if ,fail)
+    (:local.get ,end) ,@(nil-code) :ref.eq
+    (:if nil nil
+         ((:local.get ,len) (:local.set ,e))
+         ((:local.get ,end) (:ref.test :i31) :i32.eqz (:br_if ,fail)
+          (:local.get ,end) (:ref.cast! :i31) :i31.get_s (:local.tee ,e) (:local.get ,len) :i32.gt_u (:br_if ,fail)
+          (:local.get ,e) (:local.get ,b) :i32.lt_u (:br_if ,fail)))
+    (:local.get ,b) (:local.get ,off) :i32.add (:local.set ,b)
+    (:local.get ,e) (:local.get ,off) :i32.add (:local.set ,e)))
+(defun ascii-downcase-code (c)
+  `((:local.get ,c) (:i32.const 65) :i32.sub (:i32.const 26) :i32.lt_u
+    (:if nil nil ((:local.get ,c) (:i32.const 32) :i32.add (:local.set ,c)))))
+(defparameter *string-compare-locals*
+  '((m (:ref :null :mdarray)) (d1 (:ref :null :string)) (d2 (:ref :null :string))
+    (o1 :i32) (o2 :i32) (l1 :i32) (l2 :i32) (i :i32) (e1 :i32) (j :i32) (e2 :i32) (c1 :i32) (c2 :i32)))
+;;; The regions of two strings have the same characters (ignoring the case
+;;; of ASCII letters when CI): 1 or 0; -1 when this code does not decide (an
+;;; argument of another kind, bounds to signal, characters beyond ASCII that
+;;; differ when CI): the Lisp function does then.
+(defhelper* :string-eq-gen :eeeeeei-i *string-compare-locals*
+  `(:block fail nil
+     ,@(string-data-code 0 'd1 'o1 'l1 'fail)
+     ,@(string-data-code 1 'd2 'o2 'l2 'fail)
+     ,@(string-bounds-code 2 3 'o1 'l1 'i 'e1 'fail)
+     ,@(string-bounds-code 4 5 'o2 'l2 'j 'e2 'fail)
+     (:local.get e1) (:local.get i) :i32.sub (:local.get e2) (:local.get j) :i32.sub :i32.ne
+     (:if nil nil ((:i32.const 0) :return))
+     (:loop again nil
+       (:local.get i) (:local.get e1) :i32.ge_u (:if nil nil ((:i32.const 1) :return))
+       (:local.get d1) (:local.get i) (:array.get :string) (:local.tee c1)
+       (:local.get d2) (:local.get j) (:array.get :string) (:local.tee c2) :i32.ne
+       (:if nil nil
+            ((:local.get 6) :i32.eqz (:if nil nil ((:i32.const 0) :return))
+             (:local.get c1) (:local.get c2) :i32.or (:i32.const 128) :i32.ge_u (:br_if fail)
+             ,@(ascii-downcase-code 'c1) ,@(ascii-downcase-code 'c2)
+             (:local.get c1) (:local.get c2) :i32.ne (:if nil nil ((:i32.const 0) :return))))
+       (:local.get i) (:i32.const 1) :i32.add (:local.set i)
+       (:local.get j) (:i32.const 1) :i32.add (:local.set j)
+       (:br again)))
+  '(:i32.const -1))
+(defprim clysm-sys::%string-eq-fast (a b s1 e1 s2 e2 ci) :value
+  `(,@a ,@b ,@s1 ,@e1 ,@s2 ,@e2 ,@ci ,@(nil-code) :ref.eq :i32.eqz (:call :string-eq-gen) :ref.i31))
+;;; The order of the regions of two strings, as %STRING-COMPARE gives it: 4 *
+;;; the index in the first string of the first difference + 0 (none), 1 (the
+;;; first string is less there) or 2; -1 when this code does not decide.
+(defhelper* :string-compare-gen :eeeeeei-i *string-compare-locals*
+  `(:block fail nil
+     ,@(string-data-code 0 'd1 'o1 'l1 'fail)
+     ,@(string-data-code 1 'd2 'o2 'l2 'fail)
+     ,@(string-bounds-code 2 3 'o1 'l1 'i 'e1 'fail)
+     ,@(string-bounds-code 4 5 'o2 'l2 'j 'e2 'fail)
+     (:loop again nil
+       (:local.get i) (:local.get e1) :i32.ge_u
+       (:if nil nil
+            ((:local.get i) (:local.get o1) :i32.sub (:i32.const 2) :i32.shl
+             (:local.get j) (:local.get e2) :i32.lt_u :i32.add :return))
+       (:local.get j) (:local.get e2) :i32.ge_u
+       (:if nil nil
+            ((:local.get i) (:local.get o1) :i32.sub (:i32.const 2) :i32.shl (:i32.const 2) :i32.add :return))
+       (:local.get d1) (:local.get i) (:array.get :string) (:local.tee c1)
+       (:local.get d2) (:local.get j) (:array.get :string) (:local.tee c2) :i32.ne
+       (:if nil nil
+            ((:local.get 6)
+             (:if nil nil
+                  ((:local.get c1) (:local.get c2) :i32.or (:i32.const 128) :i32.ge_u (:br_if fail)
+                   ,@(ascii-downcase-code 'c1) ,@(ascii-downcase-code 'c2)))
+             (:local.get c1) (:local.get c2) :i32.ne
+             (:if nil nil
+                  ((:local.get i) (:local.get o1) :i32.sub (:i32.const 2) :i32.shl
+                   (:i32.const 1) (:i32.const 2) (:local.get c1) (:local.get c2) :i32.lt_u :select :i32.add
+                   :return))))
+       (:local.get i) (:i32.const 1) :i32.add (:local.set i)
+       (:local.get j) (:i32.const 1) :i32.add (:local.set j)
+       (:br again)))
+  '(:i32.const -1))
+(defprim clysm-sys::%string-compare-fast (a b s1 e1 s2 e2 ci) :value
+  `(,@a ,@b ,@s1 ,@e1 ,@s2 ,@e2 ,@ci ,@(nil-code) :ref.eq :i32.eqz (:call :string-compare-gen) :ref.i31))
 
 ;;; ------------------------------------------------------------
 ;;; Rationals within 64 bits
