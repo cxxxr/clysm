@@ -5089,6 +5089,16 @@ function definition is): compiled code has expanded the macro already.
 mostly reached through generic paths (the printer, `format`, CLOS dispatch,
 conditions) and the constants and closures of the global section (0.33 MB).
 
+A `block` and a `tagbody` save the binding stack pointer on entry, for an
+exit out of special bindings or an unwind made in them to restore it; the
+save (`(global.get :dyn) (struct.get :dynstate 0) (local.set n)`, 7 octets)
+is now made only when the code compiled in them restores it
+(`used-save-bsp-code`: `restore-bsp-code` notes the local in the
+function's `fstate`). It was most of the prologue of GETF and of every
+`do` and `dolist`: the module of one export 2,011,969 → 1,982,417 bytes,
+the REPL image 8,849,051 → 8,756,399;
+the time the same (geometric means of the benchmark files 0.97-1.01).
+
 `order-functions-by-use` (`src/wasm.lisp`, before a whole program, a
 library or the REPL image is encoded) gives the indices below 128, one
 octet of LEB128 instead of two, to the functions that calls and `ref.func`

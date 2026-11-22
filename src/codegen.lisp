@@ -208,6 +208,7 @@ runtime (:STRING-HASH in src/prims.lisp)."
 ;;; ------------------------------------------------------------
 
 (defstruct fstate lam nparams (locals nil) (nlocals 0) (locs (make-hash-table :test 'eq)) env-local
+  (restored-bsp nil)                    ; the locals of saved binding stack pointers that code restores
   env-type                              ; the closure type in ENV-LOCAL (NIL: the vector of a :ENVCLOV)
   (shadows (make-hash-table :test 'eq)))   ; lvar -> the locals of an (:MD2 kind) variable's storage, dimensions, offset
 
@@ -1258,7 +1259,15 @@ likely THEN is."
 (defun bstack-code () '((:global.get :dyn) (:struct.get :dynstate 1)))
 (defun set-bsp-code (value-code) `((:global.get :dyn) ,@value-code (:struct.set :dynstate 0)))
 (defun save-bsp-code (local) `(,@(bsp-code) (:local.set ,local)))
-(defun restore-bsp-code (local) `((:local.get ,local) (:call :unbind-to)))
+(defun restore-bsp-code (local)
+  (when *fs* (pushnew local (fstate-restored-bsp *fs*)))
+  `((:local.get ,local) (:call :unbind-to)))
+(defun used-save-bsp-code (local)
+  "SAVE-BSP-CODE of the pointer a block or a tagbody saves on entry for its
+exits, when an exit restores it (the code that uses it is compiled first);
+nothing otherwise (the save was most of GETF's prologue)."
+  (when (or (null *fs*) (member local (fstate-restored-bsp *fs*)))
+    (save-bsp-code local)))
 
 ;;; Binding special variables whose symbols are known: the entries
 ;;; (symbol, old value) are written to the binding stack inline, with one
@@ -2200,7 +2209,7 @@ values its RETURN-FROMs pass are raw (an i32, i64 or f64)."
                                ((not (eq rep :eqref)) (cg-rep body rep))
                                (t (cg body mv tail))))))
         (if (not (blk-nonlocal blk))
-            `(,@(save-bsp-code (blk-saved-bsp blk))
+            `(,@(used-save-bsp-code (blk-saved-bsp blk))
               (:block ,label ,(rep-wasm-type rep) ,@body-code))
             ;; non-local: a fresh tag object, try_table
             (let ((h (gensym "H")) (vtmp (new-local)) (ttmp (new-local)) (etmp (new-local :exnref)))
@@ -2818,7 +2827,7 @@ loop with a BR_TABLE."
                                      ((:local.get ,etmp) :throw_ref))))
                             `(,@blocks (:br ,end)))))
         `(,@(when (and need-dispatch (not no-pc-init)) `((:i32.const 0) (:local.set ,pc)))
-          ,@(save-bsp-code (tb-saved-bsp tb))
+          ,@(used-save-bsp-code (tb-saved-bsp tb))
           ,@(when (tb-nonlocal tb)
               (var-set-code (tb-tag-var tb) `(,@(nil-code) (:struct.new :cell))))
           (:block ,end nil
