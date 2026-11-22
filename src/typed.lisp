@@ -2112,15 +2112,38 @@ first (DUAL-B-CODE, DUAL-MATERIALIZE-CODE).")
   "The eqref of an accumulator whose value is its f64 local: an i31 below the
 fixnums (characters are above them)."
   `((:i32.const ,(- (* 2 +char-tag+))) :ref.i31))
-(defun dual-b-code (lv)
+(defvar *dual-u64-fs* nil)
+(defvar *dual-u64-enabled* nil)
+(defun dual-u64-enabled-p ()
+  "Only functions containing logical arithmetic can create the unsigned mark."
+  (unless (eq *dual-u64-fs* *fs*)
+    (setf *dual-u64-fs* *fs* *dual-u64-enabled* nil)
+    (labels ((walk (n)
+               (when (consp n)
+                 (when (and (eq (car n) :prim)
+                            (member (prim-name (second n)) '(logand logior logxor)))
+                   (setf *dual-u64-enabled* t))
+                 (unless *dual-u64-enabled* (map-subnodes #'walk n)))))
+      (walk (lam-body (fstate-lam *fs*)))))
+  *dual-u64-enabled*)
+(defun dual-u64-mark-code ()
+  "A reserved i31: the i64 local holds an unsigned integer above 2^63-1."
+  `((:i32.const ,(1+ (- (* 2 +char-tag+)))) :ref.i31))
+(defun dual-u64-demote-code (b v)
+  "Materialize an unsigned accumulator, preserving all other states."
+  (when (dual-u64-enabled-p)
+    `((:local.get ,b) ,@(dual-u64-mark-code) :ref.eq
+      (:if nil nil ((:local.get ,v) (:call :u64-int) (:local.set ,b))))))
+(defun dual-b-code (lv &optional keep-u64)
   "The eqref local of the accumulator LV (null: the value is its i64), an
 unboxed double made an object first."
   (let ((b (cdr (get-loc lv))) (f (dual-f lv)))
-    (if f
+    `(,@(unless keep-u64 (dual-u64-demote-code b (dual-local lv)))
+      ,@(if f
         `((:local.get ,b) ,@(dual-mark-code) :ref.eq
           (:if nil nil ((:local.get ,f) (:struct.new :double) (:local.set ,b)))
           (:local.get ,b))
-        `((:local.get ,b)))))
+        `((:local.get ,b))))))
 (defvar *dual-uses-lam* nil "the function whose variables *DUAL-USES* describes")
 (defvar *dual-uses* (make-hash-table :test 'eq)
   "lvar -> (arithmetic assignments . other uses) in the function being compiled")
@@ -2477,6 +2500,7 @@ fixnums is kept in B (a fixnum is not: B stays null, and the next update
 reads the i64 without a test of B's object)."
   (let ((ok (gensym "DUAL")))
     `((:block ,ok (:ref :eq)
+        ,@(dual-u64-demote-code b v)
         ,@(if f
               ;; (F: the f64 local of an accumulator that may hold an
               ;; unboxed double, B then the mark: the double is made and kept)
@@ -2651,7 +2675,8 @@ operation); NIL otherwise.  EFFECT: no value is left."
                    (fop (if sub :f64.sub :f64.add))
                    ;; (the accumulator's locals as they are: its mark is
                    ;; not made an object here)
-                   (raw-dual `((:local.get ,b) (:local.set ,lb) (:local.get ,v) (:local.set ,lv64)
+                   (raw-dual `(,@(dual-u64-demote-code b v)
+                               (:local.get ,b) (:local.set ,lb) (:local.get ,v) (:local.set ,lv64)
                                ,@(when f `((:local.get ,f) (:local.set ,lf)))))
                    ;; the sum FR is the accumulator's unboxed double
                    (f-store `((:local.get ,fr) (:local.set ,f) ,@(dual-mark-code) (:local.set ,b)
@@ -2763,15 +2788,13 @@ operation); NIL otherwise.  EFFECT: no value is left."
             (:block ,done nil
               (:block ,fail nil
                 ,@(let* ((*fused-unsigned-root* nil)
-                         (code (let ((*hint-i64-decode* t) (*fused-unsigned-ok* t)) (funcall i64-code fail)))
-                         (w (new-local :i64)))
+                         (code (let ((*hint-i64-decode* t) (*fused-unsigned-ok* t)) (funcall i64-code fail))))
                     (if *fused-unsigned-root*
-                        ;; an unsigned i64 (a tree under a mask of 64 bits):
-                        ;; from 2^63 its integer, in the eqref local
-                        `(,@code (:local.tee ,w) (:i64.const 0) :i64.lt_s
-                          (:if nil nil
-                               ((:local.get ,w) (:call :u64-int) (:local.set ,b))
-                               ((:local.get ,w) (:local.set ,v) (:ref.null :eq) (:local.set ,b))))
+                        ;; Keep all 64 bits, including the unsigned half,
+                        ;; until an object is required or signed arithmetic fails.
+                        `(,@code (:local.tee ,v) (:i64.const 0) :i64.lt_s
+                          (:if nil :eqref ,(dual-u64-mark-code) ((:ref.null :eq)))
+                          (:local.set ,b))
                         `(,@code (:local.set ,v) (:ref.null :eq) (:local.set ,b))))
                 (:br ,done))
               ;; doubles (an accumulator that is not an integer)

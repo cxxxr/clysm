@@ -111,7 +111,7 @@ operations can all be done after the leaves."
     (ecase kind
       (:const nil)
       (:dual (let ((lv (second node)))
-               `(,@(dual-b-code lv) (:local.set ,(first locs))
+               `(,@(dual-b-code lv t) (:local.set ,(first locs))
                  (:local.get ,(dual-local lv)) (:local.set ,(second locs)))))
       (:fdiv (typed-float-divmod node :pair nil (cons (first locs) (second locs))))
       (:i64 `(,@(cg-rep node :i64) (:local.set ,(first locs))))
@@ -263,7 +263,9 @@ branching to FAIL when that is not possible.  The leaves are taken from
              ((:dual :fdiv)
               (if (and wrap (eq kind :dual))
                   ;; (an accumulator that holds an integer beyond the i64: its low bits)
-                  `((:local.get ,(first locs)) :ref.is_null (:hint 1)
+                  `((:local.get ,(first locs)) :ref.is_null
+                    ,@(when (dual-u64-enabled-p)
+                        `((:local.get ,(first locs)) ,@(dual-u64-mark-code) :ref.eq :i32.or)) (:hint 1)
                     (:if nil :i64 ((:local.get ,(second locs)))
                          ,(i64-low-decode-code `((:local.get ,(first locs))) fail)))
                   (dual-pair-i64-code (first locs) (second locs) fail)))
