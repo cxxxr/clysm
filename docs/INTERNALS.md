@@ -7491,6 +7491,16 @@ What makes the code fast:
   is 72.5 -> 78.5 over eight rounds. Calling `box-i32` even for a
   fixnum result was tried first and not kept (`v-mapping` 42 -> 44 ms);
   the retained path boxes a fixnum inline.
+  With the unsigned trees of the bignum work (a root under a mask of 64
+  bits left as an unsigned i64, `*fused-unsigned-ok*`, and the unsigned
+  mark of an accumulator), `fused-code` chooses per tree: the i32 code
+  when the tree is a bounded sum of boxed or constant leaves (its root is
+  then an addition or a subtraction, never unsigned), otherwise the i64
+  code, whose root may be unsigned when the result is not known to be a
+  fixnum. A logical operation or an accumulator inside a sum is a leaf
+  of another kind or makes the range unknown, so such a sum takes the i64
+  code. `u64-bounded-sums.lisp` has sums beside masked trees and an
+  unsigned accumulator at the fixnum and 2^63 boundaries.
 
 * **The four list changes together (2026-11-23, final build).** Node.js
   24.21.0, SBCL 2.6.0.debian; eight interleaved rounds per build against
