@@ -4796,7 +4796,9 @@ MAKE-LOAD-FORM ordering), then the form, objects replaced by references."
 ;;; default-locations): the constructor fills the slots as above, makes the
 ;;; list of the initargs (those given, then the defaults) and calls the
 ;;; functions of the :AFTER methods with it, see %CTOR-MAKE-INSTANCE-AFTERS;
-;;; slot 3 is NIL then)
+;;; slot 3 is NIL then. Slot 7 of this plan is optionally a pair of lists
+;;; of keyed method functions, initialize then shared: the fixed entries
+;;; pass values in four slots, without constructing an initarg list.)
 ;;; (15: the class, 16: *CTOR-GENERATION* while the call site makes the
 ;;; instance is a copy of the template with the arguments stored: as for
 ;;; 12, or with slot 14 and no default initarg, the entry of the number of
@@ -4812,20 +4814,27 @@ instance INST and the list of its initargs."
   (do ((l (%svref ap 1) (%cdr l))) ((null l)) (funcall (the function (%car l)) inst initargs))
   inst)
 
-(defun %creation-afters (class)
+(defun %creation-afters (class keys)
   "For CLASS, when the methods of INITIALIZE-INSTANCE and SHARED-INITIALIZE
 applicable to its instances are the standard ones and :AFTER methods (at
-least one): (initialize-afters . shared-afters), functions of the instance
-(and T, the slot names) and the list of the initargs, in the order they are
-called.  NIL otherwise."
-  (let ((proto (%class-prototype class))
+least one): #(initialize-afters shared-afters keyed-afters). The first two
+lists hold functions taking the instance (and T for SHARED-INITIALIZE) and
+the initargs list. KEYED-AFTERS is a pair of corresponding lists taking the
+four keyword slots for KEYS, only when all methods support that ABI.
+NIL otherwise."
+  (let ((proto (%class-prototype class)) (keyed t) (ki nil) (ks nil)
         (gi (%gf-info #'initialize-instance)) (gs (%gf-info #'shared-initialize)))
     (flet ((afters (gf args wrap)
              (let ((r nil))
                (dolist (m (%compute-applicable-methods gf args) r)
                  (cond ((member m *standard-creation-methods*))
                        ((equal (%method-qualifiers m) '(:after))
-                        (push (or (%method-extra m +method-fast-function+) (funcall wrap m)) r))
+                        (push (or (%method-extra m +method-fast-function+) (funcall wrap m)) r)
+                        (let ((maker (%method-extra m +method-keyed-maker+)))
+                          (if maker
+                              (let ((f (funcall maker nil keys)))
+                                (if (eq gf #'initialize-instance) (push f ki) (push f ks)))
+                              (setq keyed nil))))
                        (t (return-from %creation-afters nil)))))))
       (and (not (%class-slot class +class-protocol+))
            (eq (%instance-layout gi) *the-standard-generic-function-class*)
@@ -4842,7 +4851,8 @@ called.  NIL otherwise."
                              (lambda (m)
                                (let ((f (%method-function m)))
                                  (lambda (inst names initargs) (funcall f (list* inst names initargs) nil)))))))
-             (and (or ia sa) (cons ia sa)))))))
+             (and (or ia sa) (vector ia sa (and keyed (cons ki ks)))))))))
+
 
 (defun %ctor-make-instance-afters (ctor ap args)
   "Make an instance by the constructor CTOR, whose class has :AFTER methods
@@ -4945,7 +4955,7 @@ a constant (%CONSTANT-INITFORM-P)."
          ;; INITIALIZE-INSTANCE and SHARED-INITIALIZE
          (afters (and mi (svref mi 6) (not (svref mi 3)) (or (svref mi 4) (svref mi 5))
                       (> (length ctor) 14)
-                      (%creation-afters class)))
+                      (%creation-afters class keys)))
          ;; only the standard methods apply (or those)
          (standard (and mi (svref mi 6) (not (svref mi 3))
                         (or afters (and (null (svref mi 4)) (null (svref mi 5))))))
@@ -4988,7 +4998,7 @@ a constant (%CONSTANT-INITFORM-P)."
                    (setf (svref ctor 12) -1)
                    (when (and defaults (> (length ctor) 16)) (setf (svref ctor 16) -1))
                    (setf (svref ctor 14)
-                         (vector class (car afters) (cdr afters)
+                         (vector class (svref afters 0) (svref afters 1)
                                  (mapcar #'car defaults) (mapcar #'cdr defaults)
                                  (let ((r nil) (i 0))
                                    (dolist (d defaults (nreverse r))
@@ -5002,7 +5012,10 @@ a constant (%CONSTANT-INITFORM-P)."
                                      (let ((locs nil))
                                        (dolist (p plan) (when (eql (cdr p) i) (push (car p) locs)))
                                        (push locs r)
-                                       (setq i (+ i 1)))))))))
+                                       (setq i (+ i 1)))))
+                                 ;; Both method sets can take the initargs in
+                                 ;; keyword slots. Otherwise keep the list path.
+                                 (svref afters 2)))))
                 ((some (lambda (d) (notany (lambda (sd) (member (car d) (%slotd-initargs sd)))
                                            (%class-effective-slots class)))
                        defaults)
@@ -5049,9 +5062,24 @@ a constant (%CONSTANT-INITFORM-P)."
 (defmacro %define-ctor-entry (name &rest params)
   ;; (the rest is a function of its own, OTHER: the entry stays small enough
   ;; for the engine to inline it)
-  (let ((other (intern (concatenate 'string (symbol-name name) "/OTHER") (symbol-package name))))
+  (let ((other (intern (concatenate 'string (symbol-name name) "/OTHER") (symbol-package name)))
+        (keyed-entry (intern (concatenate 'string (symbol-name name) "/KEYED-AFTERS") (symbol-package name))))
   `(progn
-   (declaim (notinline ,other))
+   (declaim (notinline ,other ,keyed-entry))
+   (defun ,keyed-entry (keyed inst ,@params)
+     ;; Keep this out of OTHER: constructors with defaults or &REST methods
+     ;; must retain the engine's inlining budget for their existing path.
+     ,(labels ((call-methods (methods required)
+                 (let* ((all (append required params))
+                        (wide (> (length all) 4))
+                        (args (if wide (append (subseq all 0 3) '(tail))
+                                  (append all (make-list (- 4 (length all)))))))
+                   `(let ,(when wide `((tail (vector ,@(nthcdr 3 all)))))
+                      (do ((l ,methods (%cdr l))) ((null l))
+                        (funcall (the function (%car l)) ,@args))))))
+        `(progn ,(call-methods '(%cdr keyed) '(inst t))
+                ,(call-methods '(%car keyed) '(inst))
+                inst)))
    (defun ,other (ctor ,@params)
      (declare (simple-vector ctor))
      (let ((ap (and (eql (%svref ctor 0) *ctor-generation*) (%fx> (%svlength ctor) 16) (%svref ctor 14))))
@@ -5068,12 +5096,16 @@ a constant (%CONSTANT-INITFORM-P)."
                               (setq i (+ i 1))
                               `(let ((l (%svref locs ,i))) (when l (%set-svref slots l ,v))))
                             params))
-                (%ctor-run-afters ap (%make-instance (%svref ctor 15) slots)
-                                  ,(let ((form nil))
-                                     (dolist (v (reverse params) form)
-                                       (setq form `(let ((k (%car ks)) (ks (%cdr ks)))
-                                                     (declare (ignorable ks))
-                                                     (cons k (cons ,v ,form)))))))))
+                (let ((inst (%make-instance (%svref ctor 15) slots))
+                      (keyed (%svref ap 7)))
+                  (if keyed
+                      (,keyed-entry keyed inst ,@params)
+                      (%ctor-run-afters ap inst
+                                       ,(let ((form nil))
+                                          (dolist (v (reverse params) form)
+                                            (setq form `(let ((k (%car ks)) (ks (%cdr ks)))
+                                                          (declare (ignorable ks))
+                                                          (cons k (cons ,v ,form)))))))))))
              (t (%ctor-make-instance-afters ctor ap (list ,@params))))))
    (defun ,name (ctor ,@params)
      (declare (simple-vector ctor))
