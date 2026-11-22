@@ -5607,6 +5607,37 @@ What makes the code fast:
   `tests/cases/clos-dispatch-short-combinations.lisp` exercises repeated
   calls, combinations, and later method changes.
 
+  *Short rest lists kept as elements* (2026-11-23). The inliner can copy
+  functions of required parameters and `&rest` when the rest list does not
+  escape: at most eight rest arguments and 60 IR nodes (30 for ordinary
+  functions). `scalarize-lists` also recognizes local LIST bindings. Each
+  element is evaluated once, left to right, into its own variable; list
+  cursors become indices. LENGTH, CAR, CDR tests, NTH (including a variable
+  index), DOLIST and APPLY at a statically known cursor use those elements.
+  Invalid NTH indices retain the ordinary NTH path; a type-error datum is
+  reconstructed on the error path, rather than replaced with NIL. Captured,
+  special, declared, escaped or destructively modified lists retain their
+  representation. The inherited implementation's error-datum replacement
+  was corrected before keeping it. `tests/cases/rest-list-elements.lisp`
+  covers ordering, aliases, cursor mutation, closures, escaping lists,
+  nested loops and variable indices.
+
+  This is call-site scalar replacement, not a new rest-argument ABI:
+  indirect calls, large consumers, more than eight arguments, and lists
+  passed through generic dispatch still allocate. APPLY can avoid making
+  its own list while its callee still builds one. In particular the
+  `gather` generic-function probe with CALL-NEXT-METHOD remains future work.
+  Two interleaved base/new rounds on slot 2, best of two processes each
+  (`04a79e5` as base; milliseconds): `b-call` 119/117 -> 62/66;
+  60 million calls of rest LENGTH 396/400 -> 28/27, CAR 160/163 -> 27/26,
+  DOLIST sum 346/345 -> 270/266. APPLY forwarding to another rest consumer
+  is unchanged (354/337 -> 357/345). In that combined probe, LENGTH of an
+  ordinary preexisting list regresses 203/203 -> 236/227. Its Wasm and the
+  LENGTH helpers are unchanged apart from ordering and labels; alone it
+  does not reproduce the slowdown (see the report's control runs). Keep
+  that observed regression with the result, rather than claiming every
+  list operation benefits.
+
   Sizes of the round: the REPL image 8,596,135 → 8,629,564 bytes (the
   making of the spread trees, the constructors' `:after` paths: nine
   entries each with its other part), the shaken module of one export

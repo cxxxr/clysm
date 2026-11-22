@@ -39,14 +39,52 @@ function gets at most.")
       (walk node)
       n)))
 
+(defvar *arity-entries*)                ; (src/codegen.lisp)
+(defparameter *inline-max-rest-nodes* 60
+  "The size limit for a rest-list consumer whose copied list can be removed.")
+(defparameter *inline-max-rest-args* 8
+  "The arguments a copy of a function with &REST takes at most for its rest list.")
+
+(defun lam-rest-only-p (l)
+  "L has required parameters and &REST, nothing else."
+  (and (lam-rest l) (null (lam-opt l)) (not (lam-keyp l))))
+
+(defun fresh-list-node (nodes)
+  "The node of (LIST . NODES), as the compiler converts it (FRESH-LIST-ARGS)."
+  (if nodes
+      `(:wasm :eqref ,nodes ((:nil) ,@(loop repeat (length nodes) collect '(:struct.new :cons))))
+      (list :const nil)))
+
+(defun fresh-list-args (node)
+  "The nodes of the elements when NODE makes a list of them (LIST of one
+or more arguments), else :NO."
+  (if (and (eq (car node) :wasm) (third node) (equal (car (fourth node)) '(:nil))
+           (= (length (cdr (fourth node))) (length (third node)))
+           (every (lambda (i) (equal i '(:struct.new :cons))) (cdr (fourth node))))
+      (third node)
+      :no))
+
 (defun inlinable-lam-p (lam sym)
   (multiple-value-bind (v found) (gethash lam *inline-candidates*)
     (if found v
         (setf (gethash lam *inline-candidates*)
-              (and (lam-simple-p lam) (null (lam-free-vars lam)) (lam-static-p lam)
+              (and (or (lam-simple-p lam)
+                       ;; (the rest list of a copy is made where it is
+                       ;; called, and not made at all when the body only
+                       ;; measures it or takes it apart: SCALARIZE-LISTS)
+                       ;; (only then: a copy that makes the list is the
+                       ;; call with more code)
+                       (and (lam-rest-only-p lam) (not (lvar-special (lam-rest lam)))
+                            ;; (not APPEND, MAX...: the call of two
+                            ;; arguments is the call of a function of two)
+                            (not (assoc sym *arity-entries*))
+                            (not (lvar-captured (lam-rest lam)))
+                            (scalarize-let (list :let nil (lam-body lam)) (list (lam-rest lam)) nil lam t)))
+                   (null (lam-free-vars lam)) (lam-static-p lam)
                    (notany #'lvar-special (lam-req lam))
                    (let ((n 0) (limit (if (gethash sym *declared-inline*)
-                                          *inline-max-declared-nodes* *inline-max-nodes*)))
+                                          *inline-max-declared-nodes*
+                                          (if (lam-rest-only-p lam) *inline-max-rest-nodes* *inline-max-nodes*))))
                      (labels ((walk (node)
                                 (when (or (> (incf n) limit)
                                           (member (car node) '(:lambda :flet :labels :defun :lcall
@@ -130,7 +168,10 @@ at SAFETY 1 and more, the test left out where the type of ARG decides it)."
 
 (defun inline-candidate (node)
   (let* ((sym (second node)) (lam (known-global-lam sym)))
-    (and lam (= (length (cddr node)) (length (lam-req lam)))
+    (and lam
+         (if (lam-rest lam)
+             (<= (length (lam-req lam)) (length (cddr node)) (+ (length (lam-req lam)) *inline-max-rest-args*))
+             (= (length (cddr node)) (length (lam-req lam))))
          ;; not a function that signals (%TYPE-ERROR, an error helper): its
          ;; call is on a path not expected to be taken, where a copy (the
          ;; list of ERROR's arguments made inline) only makes the code larger
@@ -140,7 +181,8 @@ at SAFETY 1 and more, the test left out where the type of ARG decides it)."
          ;; small: still not much larger (mutually recursive functions would
          ;; otherwise copy each other's growing bodies without end)
          (or (not (gethash lam *inlined-into*))
-             (let ((cap (* 3 (if (gethash sym *declared-inline*) *inline-max-declared-nodes* *inline-max-nodes*))))
+             (let ((cap (* 3 (if (gethash sym *declared-inline*) *inline-max-declared-nodes*
+                                (if (lam-rest-only-p lam) *inline-max-rest-nodes* *inline-max-nodes*)))))
                (<= (count-nodes (lam-body lam) cap) cap)))
          lam)))
 
@@ -352,8 +394,230 @@ constant, a variable or an IF of them."
                                 (bindings (loop for p in (lam-req callee) for a in (cddr node)
                                                 collect (cons (copy-lvar-for-inline p map)
                                                               (inline-checked-arg p a callee))))
+                                ;; (&REST: the list of the other arguments, last)
+                                (bindings (if (lam-rest callee)
+                                              (append bindings
+                                                      (list (cons (copy-lvar-for-inline (lam-rest callee) map)
+                                                                  (fresh-list-node
+                                                                   (nthcdr (length (lam-req callee)) (cddr node))))))
+                                              bindings))
                                 (body (copy-node-for-inline (lam-body callee) map)))
                            (walk body (1+ depth))
                            (setf (car node) :let
                                  (cdr node) (list bindings body)))))))))
-        (walk (lam-body lam) 0)))))
+        (walk (lam-body lam) 0)
+        (scalarize-lists lam)))))
+
+;;; A variable bound to (LIST e1 ... ek) -- the rest list of a copy of a
+;;; function with &REST, a list made to be walked once -- whose list is only
+;;; measured and taken apart is not made: the elements are variables, and a
+;;; variable that walks the list (DOLIST) holds the index of its place.
+;;; The variable (and the variables bound to it or to a CDR of it, which
+;;; may be set to their own CDRs: all of them *places*, a variable and a
+;;; number of CDRs) may be the argument of CAR, NULL, NOT, ATOM, CONSP,
+;;; ENDP, LENGTH, NTH, the test of an IF, the datum of
+;;; %TYPE-ERROR (the branch of a DOLIST that a proper list does not take),
+;;; and the last argument of APPLY at a place known where it is compiled;
+;;; anything else (a call given the list, RPLACA, a closure, a declared
+;;; type) leaves the list as it is.  (SBCL does as much for &REST, with the
+;;; arguments left on the stack.)
+(defparameter *scalarize-max-elements* 8)
+
+(defun scalarize-lists (lam)
+  "Replace (in place) in LAM's body the lists that SCALARIZE-LET can."
+  (let ((*current-lam* lam))
+    (labels ((walk (node)
+               (when (consp node)
+                 (when (eq (car node) :let)
+                   (dolist (b (second node))
+                     (let ((args (fresh-list-args (cdr b))))
+                       (when (and (listp args) (<= (length args) *scalarize-max-elements*)
+                                  (not (lvar-special (car b))) (not (lvar-captured (car b)))
+                                  (scalarize-let node b args lam))
+                         ;; (the node has other bindings now: again)
+                         (walk node)
+                         (return-from walk)))))
+                 (map-subnodes #'walk node))))
+      (walk (lam-body lam)))))
+
+(defun scalarize-let (let-node binding args lam &optional dry)
+  "BINDING of LET-NODE binds a variable to the list of the nodes ARGS: when
+the list is only used as SCALARIZE-LISTS says, bind the elements instead
+and rewrite the uses; true when it was done.  DRY: only tell whether it
+would be (BINDING is then (variable), and LET-NODE has the body)."
+  (let* ((root (car binding)) (k (length args))
+         (vars (list root))              ; the variables that are places of the list
+         (temps (loop for i from 0 below k
+                      collect (make-lvar :name (make-symbol (format nil "ELEMENT~D" i)) :owner lam)))
+         (syms (make-hash-table :test 'eq))
+         (static (make-hash-table :test 'eq)) ; variable -> its index, when it is known
+         (aliases nil) (applies nil)
+         (env nil))
+    (labels ((sym (lv) (or (gethash lv syms) (setf (gethash lv syms) (make-symbol (princ-to-string (lvar-name lv))))))
+             (place (n)
+               ;; (variable . cdrs) when N is a place of the list
+               (cond ((and (eq (car n) :lref) (member (second n) vars)) (cons (second n) 0))
+                     ((and (eq (car n) :prim) (member (prim-name (second n)) '(cdr rest))
+                           (cddr n) (null (cdddr n)))
+                      (let ((p (place (third n)))) (and p (cons (car p) (+ (cdr p) 1)))))
+                     (t nil)))
+             (static-index (p)
+               (let ((base (gethash (car p) static)))
+                 (and base (+ base (cdr p)))))
+             (index-form (p)
+               (or (static-index p)
+                   (if (eql (cdr p) 0) (sym (car p)) `(clysm-sys::%fx+ ,(sym (car p)) ,(cdr p)))))
+             (element-form (index)
+               (if (integerp index)
+                   (if (< index k) (sym (nth index temps)) nil)
+                   (let ((i (gensym "I")) (form nil))
+                     (loop for j from (- k 1) downto 0
+                           do (setq form `(if (eql ,i ,j) ,(sym (nth j temps)) ,form)))
+                     `(let ((,i ,index)) ,form))))
+             (ir (form) (convert form env))
+             (replace-node (node new)
+               (setf (car node) (car new) (cdr node) (cdr new)))
+             ;; MODE :CHECK returns from the function when a use is not one
+             ;; of those above; :REWRITE replaces the uses.  USED: the value
+             ;; of NODE is.
+             (process (node used mode)
+               (when (consp node)
+                 (let ((op (car node)))
+                   (cond
+                     ((eq op :lref)
+                      (when (member (second node) vars) (return-from scalarize-let nil)))
+                     ((and (eq op :prim) (cddr node) (null (cdddr node)) (place (third node))
+                           (member (prim-name (second node)) '(car first null not atom consp)))
+                      (when (eq mode :rewrite)
+                        (let ((index (index-form (place (third node)))) (name (prim-name (second node))))
+                          (replace-node
+                           node
+                           (ir (cond ((member name '(car first)) (element-form index))
+                                     ((integerp index) (if (eq name 'consp) (< index k) (>= index k)))
+                                     ((eq name 'consp) `(clysm-sys::%fx< ,index ,k))
+                                     (t `(clysm-sys::%fx>= ,index ,k))))))))
+                     ((and (eq op :call) (member (second node) '(length endp)) (cddr node) (null (cdddr node))
+                           (place (third node)))
+                      (when (eq mode :rewrite)
+                        (let ((index (index-form (place (third node)))))
+                          (replace-node
+                           node
+                           (ir (cond ((eq (second node) 'endp)
+                                      (if (integerp index) (>= index k) `(clysm-sys::%fx>= ,index ,k)))
+                                     ((integerp index) (max 0 (- k index)))
+                                     (t (let ((i (gensym "I")))
+                                          `(let ((,i ,index))
+                                             (if (clysm-sys::%fx< ,i ,k) (clysm-sys::%fx- ,k ,i) 0))))))))))
+                     ((and (eq op :call) (eq (second node) 'nth) (= (length (cddr node)) 2)
+                           (eq (car (third node)) :const) (typep (second (third node)) '(integer 0 1000))
+                           (place (fourth node)))
+                      (when (eq mode :rewrite)
+                        (let ((index (index-form (place (fourth node)))) (n (second (third node))))
+                          (replace-node node (ir (element-form (if (integerp index)
+                                                                   (+ index n)
+                                                                   `(clysm-sys::%fx+ ,index ,n))))))))
+                     ((and (eq op :call) (eq (second node) 'nth) (= (length (cddr node)) 2)
+                           (place (fourth node)))
+                      (process (third node) t mode)
+                      (when (eq mode :rewrite)
+                        (let ((n (gensym "N")) (i (gensym "I"))
+                              (index (index-form (place (fourth node))))
+                              (arg (third node)))
+                          ;; N is evaluated before the list cursor. Invalid
+                          ;; indices use NTH's ordinary error path; huge valid
+                          ;; indices return NIL without overflowing %FX+.
+                          ;; Bind the original IR argument without converting
+                          ;; it back to source or changing evaluation order.
+                          (let* ((v (make-lvar :name n :owner lam))
+                                 (env (env-extend env (list :var n v))))
+                            (replace-node node
+                              (list :let (list (cons v arg))
+                                    (convert
+                                     `(if (typep ,n '(integer 0 *))
+                                          (let ((,i ,index))
+                                            (if (and (< ,n ,k) (clysm-sys::%fx< ,i ,k))
+                                                ,(element-form `(clysm-sys::%fx+ ,i ,n)) nil))
+                                          (nth ,n (nthcdr ,index (list ,@(mapcar #'sym temps)))))
+                                     env)))))))
+                     ((and (eq op :call) (eq (second node) 'clysm-sys::%type-error) (cddr node) (place (third node)))
+                      (dolist (a (cdddr node)) (process a t mode))
+                      (when (eq mode :rewrite)
+                        ;; Preserve the error's datum, including for explicit
+                        ;; type errors. DOLIST's proper-list check cannot take
+                        ;; this path, so it still allocates nothing.
+                        (setf (third node)
+                              (ir `(nthcdr ,(index-form (place (third node)))
+                                           (list ,@(mapcar #'sym temps)))))))
+                     ((and (eq op :if) (place (second node)))
+                      (when (eq mode :rewrite)
+                        (let ((index (index-form (place (second node)))))
+                          (setf (second node)
+                                (ir (if (integerp index) (< index k) `(clysm-sys::%fx< ,index ,k))))))
+                      (process (third node) used mode)
+                      (process (fourth node) used mode))
+                     ((and (eq op :apply) (cddr node) (place (car (last node))))
+                      (let ((p (place (car (last node)))))
+                        (dolist (a (butlast (cdr node))) (process a t mode))
+                        (if (eq mode :check)
+                            ;; (the place must be known where the call is
+                            ;; compiled: decided when all the variables are)
+                            (push p applies)
+                            (let ((index (static-index p)))
+                              (setf (car node) :funcall
+                                    (cdr node) (append (butlast (cdr node))
+                                                       (loop for j from index below k
+                                                             collect (ir (sym (nth j temps))))))))))
+                     ((eq op :lset)
+                      (let ((v (second node)))
+                        (if (member v vars)
+                            (let ((p (place (third node))))
+                              (unless (and p (not used)) (return-from scalarize-let nil))
+                              (when (eq mode :rewrite)
+                                (replace-node node (ir `(setq ,(sym v) ,(index-form p))))))
+                            (process (third node) t mode))))
+                     ((eq op :let)
+                      (let ((new nil))
+                        (dolist (b (second node))
+                          (let ((p (place (cdr b))))
+                            (cond ((null p) (process (cdr b) t mode))
+                                  ((eq mode :check)
+                                   (when (or (lvar-special (car b)) (lvar-captured (car b)) (lvar-decl (car b)))
+                                     (return-from scalarize-let nil))
+                                   (push (cons (car b) p) aliases)
+                                   (push (car b) new))
+                                  (t (setf (cdr b) (ir (if (gethash (car b) static) nil (index-form p))))))))
+                        ;; (the variables are places in the body only)
+                        (setq vars (append new vars)))
+                      (process (third node) used mode))
+                     ((eq op :progn)
+                      (loop for l on (cdr node)
+                            do (process (car l) (and used (null (cdr l))) mode)))
+                     ((eq op :tagbody)
+                      (dolist (s (third node)) (dolist (n (cdr s)) (process n nil mode))))
+                     (t (map-subnodes (lambda (n) (process n t mode)) node)))))))
+      (when (lvar-decl root) (return-from scalarize-let nil))
+      (process (third let-node) t :check)
+      ;; the variables that are not set have a known index
+      (unless (lvar-mutated root) (setf (gethash root static) 0))
+      (dolist (a (reverse aliases))
+        (let ((v (car a)) (p (cdr a)))
+          (unless (lvar-mutated v)
+            (let ((index (static-index p)))
+              (when index (setf (gethash v static) index))))))
+      (dolist (p applies)
+        (unless (static-index p) (return-from scalarize-let nil)))
+      (when dry (return-from scalarize-let t))
+      ;; rewrite: the other variables hold their index
+      (dolist (v vars)
+        (setf (lvar-refs v) 0 (lvar-type v) nil (lvar-ntys v) nil))
+      (setq env (apply #'env-extend (make-cenv)
+                       (append (mapcar (lambda (v) (list :var (sym v) v)) vars)
+                               (mapcar (lambda (v) (list :var (sym v) v)) temps))))
+      (process (third let-node) t :rewrite)
+      (setf (second let-node)
+            (loop for b in (second let-node)
+                  append (if (eq b binding)
+                             (append (mapcar #'cons temps args)
+                                     (list (cons root (list :const (if (gethash root static) nil 0)))))
+                             (list b))))
+      t)))
