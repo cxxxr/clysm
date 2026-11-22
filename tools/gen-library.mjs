@@ -47,6 +47,7 @@ const named = entries.filter(([k]) => identifier.test(k));
 // its types (JS:DECLARE-TYPES) and how it is loaded (JS:LIBRARY-OPTIONS).
 const info = lib.library ?? { exports: {}, declarations: [], classes: {}, options: {}, defined: {} };
 const defined = info.defined ?? {};
+const reexports = info.reexports ?? [];
 const entryOf = (k) => info.exports[k]?.entry ?? null;
 // (by the class itself: a class may be exported under another name than its own)
 const classOf = (k, v) => {
@@ -125,12 +126,27 @@ const unnamedClasses = (mine) => {
 // The modules of the entries (JS:EXPORT's ENTRY), each with the exports
 // given to it: those of no entry are NAME.mjs's.
 // (an entry of declarations alone, a subpath of types, is one too)
-const entryNames = [...new Set([...named.map(([k]) => entryOf(k)), ...info.declarations.map((d) => d.entry ?? null)]
+const entryNames = [...new Set([...named.map(([k]) => entryOf(k)), ...info.declarations.map((d) => d.entry ?? null), ...reexports.map((r) => r.entry)]
   .filter((e) => e !== null))];
 for (const e of entryNames) {
-  if (!identifier.test(e.replace(/-/g, '_')) || e === name) throw new Error(`the entry ${JSON.stringify(e)} is no name of a module beside ${name}.mjs`);
+  if (typeof e !== 'string' || !identifier.test(e.replace(/-/g, '_')) || e === name) throw new Error(`the entry ${JSON.stringify(e)} is no name of a module beside ${name}.mjs`);
 }
 const exportsOf = (entry) => named.filter(([k]) => entryOf(k) === entry);
+// Explicit named re-exports keep a public entry narrow without handwritten glue.
+// Validate before writing entry modules; JSON.stringify quotes module specifiers.
+const exportedNames = new Map(entryNames.map((e) => [e, new Set(exportsOf(e).map(([k]) => k))]));
+for (const r of reexports) {
+  if (typeof r.entry !== 'string' || typeof r.from !== 'string' || !r.from.length
+      || !Array.isArray(r.names) || !r.names.length
+      || r.names.some((n) => typeof n !== 'string' || (!identifier.test(n) || n.startsWith('__clysm_')))) {
+    throw new Error('JS:REEXPORT needs a named entry, a module specifier and one or more export names');
+  }
+  const names = exportedNames.get(r.entry);
+  for (const n of r.names) {
+    if (names.has(n)) throw new Error(`the entry ${r.entry} exports ${n} more than once`);
+    names.add(n);
+  }
+}
 // (the names of the modules' helpers)
 const reserved = entries.filter(([k]) => k.startsWith('__clysm_'));
 if (reserved.length) throw new Error(`a library cannot export ${reserved.map(([k]) => k).join(', ')}: names that begin with __clysm_ are its modules' own`);
@@ -285,6 +301,12 @@ ${declarationsOf(entry)}${declarationsOfExports(mine)}
 
 const hostDir = fileURLToPath(new URL('../host/', import.meta.url));
 fs.mkdirSync(path.join(dir, 'clysm'), { recursive: true });
+for (const r of reexports) {
+  const clause = `{ ${r.names.join(', ')} } from ${JSON.stringify(r.from)};\n`;
+  if (!r.typeOnly) fs.appendFileSync(path.join(dir, `${r.entry}${ext}`), `export ${clause}`);
+  fs.appendFileSync(path.join(dir, `${r.entry}.d.ts`), `export ${r.typeOnly ? 'type ' : ''}${clause}`);
+}
+
 // (an embedded library's host is of the web alone: no module of Node.js is imported)
 for (const f of embed ? ['common.mjs', 'jsffi.mjs', 'web/lib.mjs'] : ['common.mjs', 'jsffi.mjs', 'lib.mjs', 'worker.mjs', 'process.mjs']) {
   fs.mkdirSync(path.dirname(path.join(dir, 'clysm', f)), { recursive: true });

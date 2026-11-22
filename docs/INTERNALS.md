@@ -2166,6 +2166,17 @@ JavaScript written for it (`tests/lib/package.lisp`):
   `JS:TO-JS` once) or a class. `:entry` puts it in a module of its own,
   `ENTRY.mjs` beside `NAME.mjs` (with `ENTRY.d.ts`), for a package's
   subpath (`"./places"` of its `exports`); the instance is the same.
+- `JS:REEXPORT` describes a public entry made from named exports of other
+  modules, without adding runtime exports or handwritten JavaScript:
+  `(js:reexport '("firstPlace") :from "./places.js" :entry "public")`.
+  Names may be one string, a list, or a vector; FROM is the complete module
+  specifier, including its extension, and ENTRY is a sibling module name.
+  `:type-only t` writes `export type` only in the declaration file, for
+  interfaces and types. Values use native ES re-exports, preserving their
+  identity and the original module's lazy initialization. The entry may
+  also have its own exports and declarations. Duplicate export names and
+  invalid entry/export names are rejected. Referenced modules must be
+  shipped separately; the generator does not copy them or infer types.
 - `JS:DEFINE-CLASS` makes a class of JavaScript whose constructor, methods,
   getters and static functions are Lisp functions (the methods and getters
   are given the object first). It may extend a global class (`"Error"`) or

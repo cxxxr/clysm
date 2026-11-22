@@ -96,6 +96,18 @@ if NODE=/bin/false bin/clysm compile --shake --preinit-through tests/lib/preinit
   -o build/lib-test/preinit-bad.wasm > build/lib-test.log 2>&1; then
   echo 'lib: failed explicit preinitialization silently fell back'; exit 1
 fi
+# a public entry composed of generated values, external values, and type-only exports
+bin/clysm library --shake tests/lib/reexports.lisp -o build/lib-reexports/reexports.wasm > build/lib-test.log 2>&1 \
+  || { cat build/lib-test.log; exit 1; }
+node tests/lib/reexports.mjs build/lib-reexports || exit 1
+for variant in eager embed; do
+  bin/clysm library --shake tests/lib/reexports.lisp tests/lib/reexports-$variant.lisp -o build/lib-reexports-$variant/reexports.wasm > build/lib-test.log 2>&1 \
+    || { cat build/lib-test.log; exit 1; }
+  node tests/lib/reexports.mjs build/lib-reexports-$variant || exit 1
+done
+bin/clysm compile --shake tests/lib/reexports-invalid.lisp -o build/lib-reexports/invalid.wasm > build/lib-test.log 2>&1 \
+  || { cat build/lib-test.log; exit 1; }
+node tests/lib/reexports-invalid.mjs build/lib-reexports/invalid.wasm || exit 1
 # the size of a module of one export (tests/lib/one.lisp)
 bin/clysm library --shake tests/lib/one.lisp -o build/lib-test/one.wasm > build/lib-test.log 2>&1 \
   || { cat build/lib-test.log; exit 1; }
