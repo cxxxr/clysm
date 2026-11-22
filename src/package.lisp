@@ -10,7 +10,7 @@
            #:add-import-global #:add-import-tag #:wasm-module-base-types #:wasm-module-nonnull-globals
            #:wasm-module-cast-rewrites #:wasm-module-image-defaults #:wasm-module-eager-funcs #:remove-unreachable-functions #:wasm-module-funcs
            #:wasm-module-memory #:wasm-module-memory-import #:wasm-module-table #:wasm-module-code-base #:wasm-module-globals #:shake-module #:*shake-why* #:*func-body-sizes* #:write-shake-why #:*func-source*
-           #:*func-segment* #:wasm-func-segment #:wasm-func-refs #:wasm-func-uses #:*eager-func-uses* #:body-refs #:wasm-func-p
+           #:*func-segment* #:wasm-func-segment #:wasm-func-refs #:wasm-func-uses #:*eager-func-uses* #:*encode-early* #:wasm-module-global-refs #:nref-gets #:*keep-instructions* #:body-refs #:wasm-func-p
            #:wasm-module-data #:wasm-func-ref-list #:order-functions-by-use
            #:*shake-heap-hook* #:*shake-mark* #:*shake-walking* #:shake-edge #:wasm-module-declared-refs
            #:adopt-func #:copy-module-types))
