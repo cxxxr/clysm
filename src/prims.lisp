@@ -122,14 +122,19 @@ operations can all be done after the leaves."
   (or (and (eq (car node) :const) (integerp (second node)) (<= 0 (second node) (1- (expt 2 63))))
       (and (not (eq (car node) :const)) (ty-in-range-p (node-ty node) 0 (1- (expt 2 63))))))
 
+(defvar *hint-i64-decode* nil
+  "True while the update of an integer accumulator is generated: its
+operands of unknown type are hinted to be fixnums.")
+
 (defun i64-decode-code (value-code fail)
   "The i64 value of the eqref left by VALUE-CODE when it is a fixnum or an
 integer within 64 bits; anything else branches to FAIL."
   (let ((e (new-local)) (v (new-local :i32)) (w (new-local :i64)))
-    `(,@value-code (:local.tee ,e) (:ref.test :i31)
+    `(,@value-code (:local.tee ,e) (:ref.test :i31) ,@(when *hint-i64-decode* '((:hint 1)))
       (:if nil :i64
            ((:local.get ,e) (:ref.cast! :i31) :i31.get_s (:local.tee ,v)
-            (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.ge_u (:br_if ,fail)
+            (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.ge_u
+            ,@(when *hint-i64-decode* '((:hint 0))) (:br_if ,fail)
             (:local.get ,v) :i64.extend_i32_s)
            ;; an integer within 64 bits that is not a fixnum: one call
            ;; (out of the way of the loop's registers: inline, the test of
@@ -143,9 +148,11 @@ integer within 64 bits; anything else branches to FAIL."
 to FAIL when the result does not fit."
   (ecase op
     (:add `((:local.get ,x) (:local.get ,y) :i64.add (:local.tee ,r) (:local.get ,x) :i64.xor
-            (:local.get ,r) (:local.get ,y) :i64.xor :i64.and (:i64.const 0) :i64.lt_s (:br_if ,fail)))
+            (:local.get ,r) (:local.get ,y) :i64.xor :i64.and (:i64.const 0) :i64.lt_s
+            (:hint 0) (:br_if ,fail)))
     (:sub `((:local.get ,x) (:local.get ,y) :i64.sub (:local.tee ,r) (:local.get ,x) :i64.xor
-            (:local.get ,x) (:local.get ,y) :i64.xor :i64.and (:i64.const 0) :i64.lt_s (:br_if ,fail)))
+            (:local.get ,x) (:local.get ,y) :i64.xor :i64.and (:i64.const 0) :i64.lt_s
+            (:hint 0) (:br_if ,fail)))
     (:mul `(;; bit lengths that sum to 62 or less: the product fits
             (:local.get ,x) (:local.get ,x) (:i64.const 63) :i64.shr_s :i64.xor :i64.clz
             (:local.get ,y) (:local.get ,y) (:i64.const 63) :i64.shr_s :i64.xor :i64.clz :i64.add
@@ -289,7 +296,10 @@ FAIL); NIL when the tree is not of that kind (*FUSED-REST* is then spent)."
                  (values `(,@ca (:local.set ,x) ,@cb (:local.set ,y)
                            (:local.get ,x) (:local.get ,y) ,(ecase op (:add :f64.add) (:sub :f64.sub) (:mul :f64.mul))
                            (:local.set ,r)
-                           ,@(f64-check-code name x y r fail)
+                           ;; (a sum, a difference or a product of an
+                           ;; infinity or a NaN is one: the last result is
+                           ;; tested for every step)
+                           ,@(when top (f64-check-code name x y r fail))
                            (:local.get ,r))
                          t))))))
         (t
@@ -4231,16 +4241,28 @@ branch to FAIL.  (A character is an i31 beyond any length.)"
   '(:if nil nil ((:i64.const 1) :return))
   '(:local.get a) :i64.eqz '(:if nil nil ((:local.get b) :return))
   '(:local.get b) :i64.eqz '(:if nil nil ((:local.get a) :return))
+  ;; one much longer than the other (GCD of a number and a small constant):
+  ;; a remainder first, which the binary steps would take a bit at a time
+  '(:local.get b) :i64.clz '(:local.get a) :i64.clz :i64.sub '(:i64.const 8) :i64.ge_s
+  '(:if nil nil ((:local.get a) (:local.get b) :i64.rem_u (:local.tee a) :i64.eqz
+                 (:if nil nil ((:local.get b) :return)))
+        ((:local.get a) :i64.clz (:local.get b) :i64.clz :i64.sub (:i64.const 8) :i64.ge_s
+         (:if nil nil ((:local.get b) (:local.get a) :i64.rem_u (:local.tee b) :i64.eqz
+                       (:if nil nil ((:local.get a) :return))))))
   '(:local.get a) '(:local.get b) :i64.or :i64.ctz '(:local.set sh)
   '(:local.get a) '(:local.get a) :i64.ctz :i64.shr_u '(:local.set a)
-  '(:loop again nil
-     (:local.get b) (:local.get b) :i64.ctz :i64.shr_u (:local.set b)
-     ;; a := the smaller, b := the difference (without a branch)
-     (:local.get b) (:local.get a) (:local.get a) (:local.get b) :i64.gt_u :select (:local.set tt)
-     (:local.get a) (:local.get b) :i64.sub (:local.get b) (:local.get a) :i64.sub
-     (:local.get a) (:local.get b) :i64.gt_u :select (:local.set b)
-     (:local.get tt) (:local.set a)
-     (:local.get b) :i64.eqz :i32.eqz (:br_if again))
+  '(:local.get b) '(:local.get b) :i64.ctz :i64.shr_u '(:local.set b)
+  ;; both odd: a := the smaller, b := the difference without its low zero
+  ;; bits, which are those of a - b whatever its sign: the count does not
+  ;; wait for the absolute value (a step is four instructions deep, not six)
+  '(:block done nil
+     (:loop again nil
+       (:local.get a) (:local.get b) :i64.sub (:local.tee tt) :i64.eqz (:br_if done)
+       (:local.get tt) (:i64.const 0) (:local.get tt) :i64.sub (:local.get a) (:local.get b) :i64.gt_u :select
+       (:local.get tt) :i64.ctz :i64.shr_u
+       (:local.get b) (:local.get a) (:local.get a) (:local.get b) :i64.gt_u :select (:local.set a)
+       (:local.set b)
+       (:br again)))
   '(:local.get a) '(:local.get sh) :i64.shl)
 
 (defun small-int-field-code (value-code x fail)
@@ -4697,6 +4719,35 @@ f64s in locals DA and DB (it may branch to SLOW)."
   (arith :sub :sub-gen 1 clysm-sys::%generic-sub)
   (arith :mul :mul-gen 2 clysm-sys::%generic-mul)
   (arith :div :div-gen 3 clysm-sys::%generic-div))
+
+;;; A step of an integer accumulator (typed.lisp, DUAL-LSET-CODE) that its
+;;; inline code did not take: the accumulator is the eqref of parameter 0 or,
+;;; when that is null, the i64 of parameter 1; parameter 2 is the other
+;;; operand.  :acc-add64 gives the sum when both are integers within 64 bits
+;;; and it is one (no integer is made), else -2^63, and :acc-add then gives
+;;; the generic sum.
+(macrolet ((acc (name64 name op gen)
+             `(progn
+                (defhelper ,name64 :ele-l ((a :i64) (y :i64) (r :i64))
+                  '(:local.get 0) :ref.is_null
+                  '(:if nil :i64 ((:local.get 1)) ((:local.get 0) (:call :wide-i64)))
+                  '(:local.tee a) `(:i64.const ,(- (expt 2 63))) :i64.eq
+                  `(:if nil nil ((:i64.const ,(- (expt 2 63))) :return))
+                  '(:local.get 2) '(:call :wide-i64) '(:local.tee y) `(:i64.const ,(- (expt 2 63))) :i64.eq
+                  `(:if nil nil ((:i64.const ,(- (expt 2 63))) :return))
+                  '(:local.get a) '(:local.get y) ,op '(:local.tee r) '(:local.get a) :i64.xor
+                  ,@(if (eq op :i64.add)
+                        '('(:local.get r) '(:local.get y) :i64.xor)
+                        '('(:local.get a) '(:local.get y) :i64.xor))
+                  :i64.and '(:i64.const 0) :i64.lt_s
+                  `(:if nil nil ((:i64.const ,(- (expt 2 63))) :return))
+                  '(:local.get r))
+                (defhelper ,name :ele-e ()
+                  '(:local.get 0) :ref.is_null
+                  '(:if nil :eqref ((:local.get 1) (:call :i64-int)) ((:local.get 0)))
+                  '(:local.get 2) '(:return_call ,gen)))))
+  (acc :acc-add64 :acc-add :i64.add :add)
+  (acc :acc-sub64 :acc-sub :i64.sub :sub))
 
 (defprim / (a b) :value `(,@a ,@b (:call :div)))
 (defprim / (a) :value `(,@(fixnum-code 1) ,@a (:call :div)))
@@ -5449,10 +5500,29 @@ through."
                 '(:local.get 0) '(:local.get 1) '(:return_call ,(intern (format nil "DIVMOD~D" mode) :keyword)))))
   (front :quot0 0) (front :quot1 1) (front :quot2 2) (front :quot3 3))
 
+;;; with one argument: a fixnum is its own quotient (the remainder 0), in any
+;;; mode; the general helper otherwise (:quot-one: the quotient only, with no
+;;; remainder made for a ratio)
+(defhelper :divmod-one :ei-e ()
+  '(:local.get 0) '(:call :fixnump)
+  '(:if nil nil ((:global.get :mv-buf) (:i32.const 0) (:i32.const 0) :ref.i31 (:array.set :vector)
+                 (:i32.const 2) (:global.set :mv-count)
+                 (:local.get 0) :return))
+  '(:local.get 0) (fixnum-code 1) '(:local.get 1) '(:return_call :divmod))
+(defhelper :quot-one :ei-e ((e :eqref))
+  '(:local.get 0) '(:call :fixnump)
+  '(:if nil nil ((:local.get 0) :return))
+  '(:local.get 0) '(:ref.test :ratio)
+  `(:if nil nil
+        ((:local.get 0) ,@(fixnum-code 1) (:local.get 1) (:call :ratio-quot) (:local.tee e)
+         :ref.is_null :i32.eqz
+         (:if nil nil ((:local.get e) :return))))
+  '(:local.get 0) (fixnum-code 1) '(:local.get 1) '(:return_call :divmod))
+
 (macrolet ((div (name mode)
              `(progn
                 (defprim ,name (a b) :mv `(,@a ,@b (:call ,,(intern (format nil "DIVMOD~D" mode) :keyword))))
-                (defprim ,name (a) :mv `(,@a ,@(fixnum-code 1) (:i32.const ,,mode) (:call :divmod))))))
+                (defprim ,name (a) :mv `(,@a (:i32.const ,,mode) (:call :divmod-one))))))
   (div truncate 0) (div floor 1) (div ceiling 2) (div round 3))
 
 ;;; ------------------------------------------------------------
@@ -7211,13 +7281,9 @@ in local V and the index in local K; else branch to FAIL."
      (:local.get xb) (:i64.const ,(- (expt 2 63))) :i64.eq (:br_if slow)
      (:local.get xa) (:i64.const 0) :i64.lt_s (:if nil nil ((:i64.const 0) (:local.get xa) :i64.sub (:local.set xa)))
      (:local.get xb) (:i64.const 0) :i64.lt_s (:if nil nil ((:i64.const 0) (:local.get xb) :i64.sub (:local.set xb)))
-     (:block done nil
-       (:loop again nil
-         (:local.get xb) :i64.eqz (:br_if done)
-         (:local.get xa) (:local.get xb) :i64.rem_u (:local.set tt)
-         (:local.get xb) (:local.set xa) (:local.get tt) (:local.set xb)
-         (:br again)))
-     (:local.get xa) (:call :i64-int) :return)
+     ;; the binary algorithm of the rationals (:gcd64): a step is a
+     ;; subtraction and a shift, where Euclid's is a division
+     (:local.get xa) (:local.get xb) (:call :gcd64) (:call :i64-int) :return)
   '(:local.get 0) '(:local.get 1) `(:global.get ,(sym-global 'clysm-sys::%gcd-big)) '(:call (:callsym 2)))
 (defprim clysm-sys::%gcd (a b) :value `(,@a ,@b (:call :gcd)))
 

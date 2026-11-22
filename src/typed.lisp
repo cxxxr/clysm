@@ -188,13 +188,68 @@ a recurrence (mandelbrot at (SAFETY 1): 235 ms against 312)."
       `((:local.get ,r) :i64.reinterpret_f64 (:i64.const 52) :i64.shr_u :i32.wrap_i64
         (:i32.const #x7FF) :i32.and (:i32.const #x7FF) :i32.eq)))
 
+(defun f64-tree-op-p (node)
+  "NODE is a sum, difference or product of two operands computed in f64
+(F64-BINOP-CODE)."
+  (and (eq (car node) :prim) (member (node-op-name node) '(+ - *))
+       (= (length (cddr node)) 2) (every #'f64-arg-p (cddr node))
+       (ty-double-p (node-ty node))))
+
+(defun f64-tree-code (node)
+  "For NODE, a sum, difference or product in f64 with such operations among
+its operands: the tree computed without tests and its result tested once.
+A sum, a difference or a product of an infinity or a NaN is one, so a result
+that is finite had no step that was not; otherwise the tree is computed
+again from the values of its leaves with the test of each step
+(F64-BINOP-CODE), whose generic function decides.  An operation whose test
+is put off so is one after which only variables and constants are evaluated
+(what it signals would otherwise come after their effects); the others are
+leaves.  NIL when there is none (or at (SAFETY 0), which has no tests)."
+  (unless (and (f64-tree-op-p node) (not (eql (cg-safety) 0)))
+    (return-from f64-tree-code nil))
+  (let ((leaves nil) (deferred 0))
+    (labels ((simple-p (n) (member (car n) '(:const :lref)))
+             (only-simple-p (n open)
+               ;; the leaves of N, were it taken into the tree (OPEN), are simple
+               (if (and open (f64-tree-op-p n))
+                   (and (only-simple-p (third n) t) (only-simple-p (fourth n) t))
+                   (simple-p n)))
+             (plan (n top rest-simple)
+               ;; REST-SIMPLE: what is evaluated after N is variables and constants
+               (cond ((and (f64-tree-op-p n) (or top rest-simple))
+                      (unless top (incf deferred))
+                      (let* ((a (third n)) (b (fourth n))
+                             (pa (plan a nil (and rest-simple (only-simple-p b rest-simple))))
+                             (pb (plan b nil rest-simple)))
+                        (list :op (node-op-name n) pa pb)))
+                     (t (let ((l (new-local :f64)))
+                          (push (cons n l) leaves)
+                          (list :leaf l)))))
+             (fast (p)
+               (if (eq (car p) :leaf)
+                   `((:local.get ,(second p)))
+                   `(,@(fast (third p)) ,@(fast (fourth p))
+                     ,(ecase (second p) (+ :f64.add) (- :f64.sub) (* :f64.mul)))))
+             (checked (p)
+               (if (eq (car p) :leaf)
+                   `((:local.get ,(second p)))
+                   (f64-binop-code (second p) (checked (third p)) (checked (fourth p))))))
+      (let ((p (plan node t t)) (r (new-local :f64)))
+        (when (= deferred 0) (return-from f64-tree-code nil))
+        ;; (PLAN visits the leaves in the order of evaluation)
+        `(,@(loop for (n . l) in (reverse leaves) append `(,@(f64-arg-code n) (:local.set ,l)))
+          ,@(fast p) (:local.set ,r)
+          ,@(f64-not-finite-code (second p) r)
+          (:hint 0) (:if nil :f64 ,(checked p) ((:local.get ,r))))))))
+
 (defun f64-op-code (node)
   "f64 code for an operation whose result is a double, or NIL."
   (let ((name (node-op-name node)) (args (cddr node)))
     (or
     (case name
       ((+ - * /)
-       (cond ((and (= (length args) 2) (every #'f64-arg-p args))
+       (cond ((f64-tree-code node))
+             ((and (= (length args) 2) (every #'f64-arg-p args))
               (f64-binop-code name (f64-arg-code (first args)) (f64-arg-code (second args))))
              ((and (eq name '-) (= (length args) 1) (ty-double-p (node-ty (first args))))
               `(,@(cg-rep (first args) :f64) :f64.neg))))
@@ -1768,8 +1823,11 @@ computed for a division by 1 unless NEED-REM)."
                 (some (lambda (a) (logtest (ty-bits (node-ty a)) +k-ratio+)) (cddr node)))
            ;; the quotient of a rational: no remainder made
            (destructuring-bind (a &optional b) (cddr node)
-             `(,@(cg a) ,@(if b (cg b) (fixnum-code 1))
-               (:call ,(intern (format nil "QUOT~D" (cdr (assoc name *divmod-modes*))) :keyword)))))
+             (if b
+                 `(,@(cg a) ,@(cg b)
+                   (:call ,(intern (format nil "QUOT~D" (cdr (assoc name *divmod-modes*))) :keyword)))
+                 ;; (one argument: a fixnum as it is)
+                 `(,@(cg a) (:i32.const ,(cdr (assoc name *divmod-modes*))) (:call :quot-one)))))
           (t nil))))
 
 (defun numeric-f64-op-code (node)
@@ -1989,20 +2047,41 @@ eqref), the local of the remainder and its representation; or NIL."
   "lvar -> (arithmetic assignments . other uses) in the function being compiled")
 
 
+(defun acc-step-operand (lv e)
+  "When E, assigned to the variable LV, is (+ lv x), (+ x lv) or (- lv x)
+with X one value (no arithmetic of the fused trees): X.  Else NIL."
+  (and (eq (car e) :prim) (member (prim-name (second e)) '(+ -)) (= (length (cddr e)) 2)
+       (let ((a (third e)) (b (fourth e)))
+         (flet ((self (n) (and (eq (car n) :lref) (eq (second n) lv))))
+           (cond ((and (self a) (not (self b)) (not (fusable-op-node-p b))) b)
+                 ((and (eq (prim-name (second e)) '+) (self b) (not (self a)) (not (fusable-op-node-p a))) a))))))
+
+(defun acc-step-p (lv e)
+  "E, assigned to LV, is a step of LV by one value (ACC-STEP-OPERAND) that is
+not known to be a double, nor an expression computed as an unboxed double
+where it can be (a value that is one on some of its paths): the sum of those
+is a tree of doubles (SPEC-TREE-CODE).  (A variable that may hold an unboxed
+double is a step: DUAL-LSET-CODE adds it as one first.)"
+  (let ((x (acc-step-operand lv e)))
+    (and x (not (ty-double-p (node-ty x)))
+         (or (eq (car x) :lref) (not (or (spec-able-p x) (dual-f64-node-p x)))))))
+
 (defun dual-uses (lv)
   "How LV is used in the function being compiled: a vector of the number of
 its assignments from integer arithmetic, of its uses other than as an
 operand of those, of those assignments within loops, of the uses within
 loops other than as an operand of integer arithmetic or of a comparison
-(which read the i64), and of the assignments within loops by arithmetic
-with an operand known to be an integer.  (Each other use after an update
+(which read the i64), of the assignments within loops by arithmetic
+with an operand known to be an integer, and of those that are a step by one
+value of unknown type (ACC-STEP-P) whose value is not used (a step whose
+value is used makes its integer each time: no better than the plain sum).  (Each other use after an update
 makes the integer, so the pair of locals pays only for a variable that is
 updated more than it is looked at: a sum or a hash value, not a loop index.)"
-  (let ((lam (fstate-lam *fs*)) (depth 0))
+  (let ((lam (fstate-lam *fs*)) (depth 0) (blocks nil) (eff nil))
     (unless (eq lam *dual-uses-lam*)
       (clrhash *dual-uses*)
       (setf *dual-uses-lam* lam)
-      (labels ((entry (v) (or (gethash v *dual-uses*) (setf (gethash v *dual-uses*) (vector 0 0 0 0 0))))
+      (labels ((entry (v) (or (gethash v *dual-uses*) (setf (gethash v *dual-uses*) (vector 0 0 0 0 0 0))))
                (int-leaf-p (v n)
                  ;; the tree N has an operand other than V known to be an integer
                  (if (fusable-op-node-p n)
@@ -2022,6 +2101,15 @@ updated more than it is looked at: a sum or a hash value, not a loop index.)"
                        ((fusable-op-node-p n) (dolist (a (cddr n)) (operands v a)))
                        (t (walk n))))
                (walk (n)
+                 ;; EFF: the value of N is not used (a statement of a loop,
+                 ;; a form of a PROGN but the last); the forms within are
+                 ;; taken as used unless WALK1 says otherwise
+                 (let ((e0 eff))
+                   (setq eff nil)
+                   (walk1 n e0)
+                   (setq eff e0)))
+               (walk-eff (n e) (setq eff e) (walk n) (setq eff nil))
+               (walk1 (n e0)
                  (when (consp n)
                    (case (car n)
                      (:lref (ref (second n) nil))
@@ -2036,10 +2124,11 @@ updated more than it is looked at: a sum or a hash value, not a loop index.)"
                                     (incf (svref en 0))
                                     (when (> depth 0)
                                       (incf (svref en 2))
-                                      (when (int-leaf-p v tree) (incf (svref en 4))))
+                                      (cond ((int-leaf-p v tree) (incf (svref en 4)))
+                                            ((and e0 (acc-step-p v tree)) (incf (svref en 5)))))
                                     (operands v tree)
                                     (walk g) (walk (fourth (guarded-copy-if e))))
-                                  (return-from walk)))
+                                  (return-from walk1)))
                               ;; (SETQ v (f v)) with F's copy guarded, any
                               ;; code whose value is an integer within 64
                               ;; bits (CG-DUAL-I64): an update too; the
@@ -2056,21 +2145,36 @@ updated more than it is looked at: a sum or a hash value, not a loop index.)"
                                                  (walk (cdr b))))
                                              (setq x (third x))))
                                   (walk (second gif)) (walk (third gif)) (walk (fourth gif))
-                                  (return-from walk)))
+                                  (return-from walk1)))
                               (if (and (eq (car e) :prim) (fusable-op-node-p e))
                                   (let ((en (entry v)))
                                     (incf (svref en 0))
                                     (when (> depth 0)
                                       (incf (svref en 2))
-                                      (when (int-leaf-p v e) (incf (svref en 4))))
+                                      (cond ((int-leaf-p v e) (incf (svref en 4)))
+                                            ((and e0 (acc-step-p v e)) (incf (svref en 5)))))
                                     (operands v e))
                                   (walk e))))
-                     (:tagbody (incf depth) (map-subnodes #'walk n) (decf depth))
+                     (:tagbody (incf depth)
+                      (dolist (seg (third n)) (dolist (f (cdr seg)) (walk-eff f t)))
+                      (decf depth))
+                     (:progn (loop for (f . rest) on (cdr n) do (walk-eff f (if rest t e0))))
+                     (:if (walk (second n)) (walk-eff (third n) e0) (walk-eff (fourth n) e0))
+                     (:let (dolist (b (second n)) (walk (cdr b))) (walk-eff (third n) e0))
+                     (:mvbind (walk (third n)) (walk-eff (fourth n) e0))
+                     ((:flet :labels) (walk-eff (third n) e0))
+                     ;; a variable returned out of the loops it is updated in
+                     ;; is looked at once, not at each iteration
+                     (:block (push (cons (second n) depth) blocks) (walk-eff (third n) e0) (pop blocks))
+                     (:return-from (let ((b (assoc (second n) blocks)) (val (third n)))
+                                     (if (and b (< (cdr b) depth) (eq (car val) :lref))
+                                         (ref (second val) t)
+                                         (walk val))))
                      (t (if (or (fusable-op-node-p n) (spec-cmp-node-p n))
                             (dolist (a (cddr n)) (if (eq (car a) :lref) (ref (second a) t) (walk a)))
                             (map-subnodes #'walk n)))))))
         (walk (lam-body lam))))
-    (or (gethash lv *dual-uses*) (vector 0 0 0 0 0))))
+    (or (gethash lv *dual-uses*) (vector 0 0 0 0 0 0))))
 
 (defun note-dual-var (lv &optional param)
   "Called when LV gets its location (BIND-NEW-VAR-CODE, PARAM-SETUP-CODE).
@@ -2082,18 +2186,25 @@ an accumulator when its assignments are integer arithmetic."
                   (if (or param (and ty (ty-only-p ty +k-int+)))
                       (<= (svref uses 1) (svref uses 0))
                       ;; a number that may be an integer (what is not one
-                      ;; goes to its eqref local), updated in a loop only by
+                      ;; goes to its eqref local), updated in a loop by
                       ;; arithmetic with an operand known to be an integer,
                       ;; more often than it is looked at there (other than
                       ;; as an operand of arithmetic or of a comparison): a
-                      ;; counter from a value of unknown type.  (Not one
-                      ;; also updated by values of unknown types, whose
-                      ;; updates are fixnums most often: the code of the
-                      ;; i64 and f64 attempts of each, b-catch 36 -> 39 ms;
+                      ;; counter from a value of unknown type; or by steps
+                      ;; by one value of unknown type (ACC-STEP-P: a sum
+                      ;; of what a function returns or a list holds, whose
+                      ;; update is a short code and two helpers, see
+                      ;; DUAL-LSET-CODE).  One such update is enough; one
+                      ;; updated only by other arithmetic on values of
+                      ;; unknown types is not (they are fixnums most often,
+                      ;; and the i64 and f64 attempts of each update made
+                      ;; functions too large for V8 to copy into their
+                      ;; callers: control 1.02, r-mapcar-return 67 -> 99),
                       ;; nor one that may be something else, as the NIL a
                       ;; LOOP's FOR J = starts with: p-loop-macros 66 -> 78 ms.)
                       (and (or (null ty) (= (ty-bits ty) +k-all+) (and (logtest (ty-bits ty) +k-int+) (ty-only-p ty +k-number+)))
-                           (> (svref uses 2) 0) (> (svref uses 4) 0) (< (svref uses 3) (svref uses 2)))))))
+                           ;; (one such update is enough: the others take the general code)
+                           (> (svref uses 2) 0) (> (+ (svref uses 4) (svref uses 5)) 0) (< (svref uses 3) (svref uses 2)))))))
       (setf (gethash lv *dual-vars*) (new-local :i64))
       (remhash lv *dual-vars*)))
 
@@ -2277,19 +2388,25 @@ the value of NODE: B null when F holds it."
   (and (null (lvar-rep lv)) (not (boxed-p lv)) (gethash lv *dual-vars*)))
 
 (defun dual-materialize-code (b v)
-  "The integer of the pair of locals B (eqref) and V (i64), kept in B."
+  "The integer of the pair of locals B (eqref) and V (i64); one beyond the
+fixnums is kept in B (a fixnum is not: B stays null, and the next update
+reads the i64 without a test of B's object)."
   (let ((ok (gensym "DUAL")))
     `((:block ,ok (:ref :eq)
         (:local.get ,b) (:br_on_non_null ,ok)
         (:local.get ,v) (:i64.const ,+char-tag+) :i64.add (:i64.const ,(* 2 +char-tag+)) :i64.lt_u
-        (:if nil :eqref ((:local.get ,v) :i32.wrap_i64 :ref.i31) ((:local.get ,v) (:call :i64-int)))
-        (:local.tee ,b) :ref.as_non_null))))
+        (:if nil :eqref
+             ((:local.get ,v) :i32.wrap_i64 :ref.i31)
+             ((:local.get ,v) (:call :i64-int) (:local.tee ,b)))
+        :ref.as_non_null))))
 
 (defun dual-get-code (lv)
   (dual-materialize-code (cdr (get-loc lv)) (dual-local lv)))
 
 (defun dual-pair-i64-code (b v fail)
-  `((:local.get ,b) :ref.is_null
+  ;; (the i64 holds the value most often; hinted so, the decoding of the
+  ;; eqref and its call stay out of the way of the loop's registers)
+  `((:local.get ,b) :ref.is_null (:hint 1)
     (:if nil :i64 ((:local.get ,v)) ,(i64-decode-code `((:local.get ,b)) fail))))
 
 (defun guarded-copy-if (expr)
@@ -2420,10 +2537,82 @@ operation); NIL otherwise.  EFFECT: no value is left."
                       (dbl expr))))
       (let ((b (cdr (get-loc lv))) (fail (gensym "SLOW")) (fail2 (gensym "SLOWF")) (done (gensym "ACC")))
         (multiple-value-bind (leaves i64-code generic recs) (fused-parts expr)
+          ;; a step by a value of unknown type, (+ var x) or (- var x):
+          ;; first as the values most often are (the accumulator in its i64,
+          ;; X a fixnum), with every other case an unlikely branch out of
+          ;; it, so that no call stands in the code of the loop; then two
+          ;; helpers: the sum of integers within 64 bits whatever holds
+          ;; them (no integer is made), and the generic sum
+          (when (and (acc-step-p lv expr) (= (length recs) 2)
+                     (find :dual recs :key #'second) (find :eqref recs :key #'second))
+            (let* ((dual (find :dual recs :key #'second)) (other (find :eqref recs :key #'second))
+                   (lb (third dual)) (lv64 (fourth dual)) (lx (third other))
+                   (sub (eq (prim-name (second expr)) '-))
+                   (lean (gensym "LEAN")) (r (new-local :i64)) (xi (new-local :i32))
+                   ;; the other operand is a variable that may hold an
+                   ;; unboxed double (its f64 local, a null eqref)
+                   (xf (and (fdual-lref-p (first other)) (fdual-local (second (first other)))))
+                   (xb (and xf (cdr (get-loc (second (first other)))))))
+              (return-from dual-lset-code
+                ;; (the leaves in their order; a variable's unboxed double
+                ;; is read after the accumulator, which it cannot change)
+                `(,@(if xf (fused-leaf-eval-code dual) leaves)
+                  (:block ,done ,(if effect nil :eqref)
+                    ;; an unboxed double added to an accumulator that holds
+                    ;; a double (a sum of doubles that started from 0): in
+                    ;; f64, before the double is made an object for the
+                    ;; other paths
+                    ,@(when xf
+                        (let ((nd (gensym "NOTD")) (fr (new-local :f64)))
+                          `((:block ,nd nil
+                              (:local.get ,xb) :ref.is_null :i32.eqz (:br_if ,nd)
+                              (:local.get ,lb) (:ref.test :double) :i32.eqz (:br_if ,nd)
+                              (:local.get ,lb) (:ref.cast! :double) (:struct.get :double 0) (:local.get ,xf)
+                              ,(if sub :f64.sub :f64.add) (:local.tee ,fr)
+                              (:local.get ,fr) :f64.sub (:f64.const 0) :f64.ne (:hint 0) (:br_if ,nd)
+                              (:local.get ,fr) (:struct.new :double)
+                              ,@(if effect `((:local.set ,b)) `((:local.tee ,b) :ref.as_non_null))
+                              (:br ,done)))))
+                    ,@(when xf (fused-leaf-eval-code other))
+                    (:block ,lean nil
+                      ;; (an accumulator within 2^62 and a fixnum: their sum
+                      ;; is within 64 bits, one test instead of the test of
+                      ;; the sum's overflow)
+                      (:local.get ,lb) :ref.is_null :i32.eqz (:hint 0) (:br_if ,lean)
+                      (:local.get ,lx) (:ref.test :i31) :i32.eqz (:hint 0) (:br_if ,lean)
+                      (:local.get ,lx) (:ref.cast! :i31) :i31.get_s (:local.tee ,xi)
+                      (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.ge_u
+                      (:hint 0) (:br_if ,lean)
+                      (:local.get ,lv64) (:i64.const ,(expt 2 62)) :i64.add (:i64.const 0) :i64.lt_s
+                      (:hint 0) (:br_if ,lean)
+                      (:local.get ,lv64) (:local.get ,xi) :i64.extend_i32_s ,(if sub :i64.sub :i64.add)
+                      (:local.tee ,v) (:ref.null :eq) (:local.set ,b)
+                      ;; (the value, when it is used: the fixnum of the sum
+                      ;; here, not after the paths have joined)
+                      ,@(if effect
+                            '(:drop)
+                            `((:i64.const ,+char-tag+) :i64.add (:i64.const ,(* 2 +char-tag+)) :i64.lt_u (:hint 1)
+                              (:if nil :eqref ((:local.get ,v) :i32.wrap_i64 :ref.i31)
+                                   ((:local.get ,v) (:call :i64-int) (:local.tee ,b) :ref.as_non_null))))
+                      (:br ,done))
+                    ;; (a double, as the sum of doubles from 0 has at each
+                    ;; step: the generic sum at once)
+                    (:local.get ,lx) (:ref.test :double)
+                    (:if nil :i64
+                         ((:i64.const ,(- (expt 2 63))))
+                         ((:local.get ,lb) (:local.get ,lv64) (:local.get ,lx)
+                          (:call ,(if sub :acc-sub64 :acc-add64))))
+                    (:local.tee ,r)
+                    (:i64.const ,(- (expt 2 63))) :i64.ne
+                    (:if nil nil
+                         ((:local.get ,r) (:local.set ,v) (:ref.null :eq) (:local.set ,b))
+                         ((:local.get ,lb) (:local.get ,lv64) (:local.get ,lx)
+                          (:call ,(if sub :acc-sub :acc-add)) (:local.set ,b)))
+                    ,@(unless effect (dual-materialize-code b v)))))))
           `(,@leaves
             (:block ,done nil
               (:block ,fail nil
-                ,@(funcall i64-code fail)
+                ,@(let ((*hint-i64-decode* t)) (funcall i64-code fail))
                 (:local.set ,v) (:ref.null :eq) (:local.set ,b)
                 (:br ,done))
               ;; doubles (an accumulator that is not an integer)
