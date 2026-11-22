@@ -2002,6 +2002,23 @@ updated more than it is looked at: a sum or a hash value, not a loop index.)"
                                     (operands v tree)
                                     (walk g) (walk (fourth (guarded-copy-if e))))
                                   (return-from walk)))
+                              ;; (SETQ v (f v)) with F's copy guarded, any
+                              ;; code whose value is an integer within 64
+                              ;; bits (CG-DUAL-I64): an update too; the
+                              ;; LETs' references of v copy the pair
+                              (let ((gif (guarded-copy-if e)))
+                                (when (and gif (int64-copy-p gif))
+                                  (let ((en (entry v)))
+                                    (incf (svref en 0))
+                                    (when (> depth 0) (incf (svref en 2)) (incf (svref en 4))))
+                                  (let ((x e))
+                                    (loop until (eq x gif)
+                                          do (dolist (b (second x))
+                                               (unless (and (eq (car (cdr b)) :lref) (eq (second (cdr b)) v))
+                                                 (walk (cdr b))))
+                                             (setq x (third x))))
+                                  (walk (second gif)) (walk (third gif)) (walk (fourth gif))
+                                  (return-from walk)))
                               (if (and (eq (car e) :prim) (fusable-op-node-p e))
                                   (let ((en (entry v)))
                                     (incf (svref en 0))
@@ -2244,6 +2261,38 @@ compiled in the image."
   (loop while (and (eq (car expr) :let) (consp (third expr))) do (setq expr (third expr)))
   (and (eq (car expr) :if) (guard-node-p (second expr)) expr))
 
+(defun dual-alias-src (lv init)
+  "The integer accumulator that the LET variable LV is bound to (INIT is a
+reference of it) when LV can have a pair of locals too, else NIL.  (In code
+compiled in the image, where the arguments of guarded copies are bound so.)"
+  (and *live-mode* (eq (car init) :lref)
+       (let ((src (second init)))
+         (and (not (eq src lv)) (dual-local src) (eq (car (get-loc src)) :local)
+              (null (lvar-rep lv)) (not (boxed-p lv)) (not (lvar-captured lv)) (not (lvar-special lv))
+              (not *no-fuse*)
+              src))))
+
+(defun int64-copy-p (gif)
+  "The copy of the guarded copy GIF (GUARDED-COPY-IF) is an integer within 64 bits."
+  (let ((ty (node-ty (third gif))))
+    (and (ty-only-p ty +k-int+) (ty-int64-p ty))))
+
+(defun cg-dual-i64 (node b v)
+  "Code (leaving nothing) setting the pair of locals B (eqref) and V (i64) of
+an integer accumulator to the value of NODE, a guarded copy under LETs
+(GUARDED-COPY-IF) whose copy is an integer within 64 bits: the copy's value
+to V without making the integer (B null), the value of the call that a
+failed guard makes to B."
+  (case (car node)
+    (:let (cg-let node nil nil (list :idual b v)))
+    (:if (let ((fast `(,@(cg-rep (third node) :i64) (:local.set ,v) (:ref.null :eq) (:local.set ,b))))
+           (if (assumed-guard-p (second node))
+               fast
+               `(,@(cg-test (second node)) (:hint 1)
+                 (:if nil nil ,fast
+                      (,@(cg (fourth node)) (:local.set ,b) ,@(guard-else-epilogue (second node))))))))
+    (t `(,@(cg node) (:local.set ,b)))))
+
 (defun guarded-int-copy (expr v &optional (dual-p t))
   "When EXPR, assigned to the variable V, is a guarded copy (GUARDED-COPY-IF)
 whose LETs only bind variables to V (or to such variables) and whose copy
@@ -2311,6 +2360,13 @@ operation); NIL otherwise.  EFFECT: no value is left."
                                (,@(cg-effect (list :let bindings (list :lset lv else)))
                                 ,@(guard-else-epilogue g)))))
                   ,@(unless effect (dual-materialize-code (cdr (get-loc lv)) v)))))))))
+    ;; a guarded copy of other code whose value is an integer within 64 bits
+    (when (and v (eq (car (get-loc lv)) :local) (not *no-fuse*))
+      (let ((gif (guarded-copy-if expr)))
+        (when (and gif (int64-copy-p gif))
+          (return-from dual-lset-code
+            `(,@(cg-dual-i64 expr (cdr (get-loc lv)) v)
+              ,@(unless effect (dual-materialize-code (cdr (get-loc lv)) v)))))))
     ;; an unboxed double variable
     (when (and (fdual-local lv) (eq (car (get-loc lv)) :local) (spec-able-p expr))
       (let ((b (cdr (get-loc lv))) (f (fdual-local lv)))
