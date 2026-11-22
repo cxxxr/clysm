@@ -5,6 +5,8 @@
 //   clysm compile [--shake] FILE... [-o OUT.wasm]
 //   clysm library [--shake] FILE... -o DIR/NAME.wasm   (NAME.wasm.debug, NAME.mjs, NAME.d.ts too)
 //   clysm run [--shake] FILE... [-- ARGS]
+//   clysm build [--system NAME]... [--asd FILE.asd]... [--load FILE]... [--eval FORM]... [-o OUT.wasm] [FILE...]
+//                            (an application with its ASDF systems as one module)
 //   clysm exec OUT.wasm [ARGS]
 //   clysm test [--watch] [-j N] [--dom] [--system NAME [--asd FILE.asd]] FILE...
 //   clysm repl | clysm script FILE | clysm eval [--no-userinit] FORM...
@@ -208,6 +210,13 @@ switch (cmd) {
     process.exit(run([nursery, runHost, replImage, ...forms], { env: replEnv() }));
     break;
   }
+  case 'build': {
+    // the REPL image builds the program (src/static.lisp)
+    if (!replImage) { console.error('clysm: the REPL image (clysm-native.wasm) is missing'); process.exit(1); }
+    process.exit(run([nursery, runHost, replImage, path.join(root, 'tools', 'static-build.lisp'), ...args],
+                     { env: replEnv() }));
+    break;
+  }
   case 'swank': {
     if (!replImage) { console.error('clysm: the REPL image (clysm-native.wasm) is missing'); process.exit(1); }
     let port = 4005;
@@ -221,7 +230,7 @@ switch (cmd) {
     break;
   }
   default:
-    console.log(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(1, 12)
+    console.log(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(1, 14)
       .map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
     process.exit(cmd ? 1 : 0);
 }

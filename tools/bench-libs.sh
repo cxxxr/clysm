@@ -6,6 +6,10 @@
 # FILE is bench/libs.lisp by default; with another (bench/apps.lisp: JSON,
 # a PEG grammar, dates, tokens of a Lisp file) the self-hosted compiler is
 # not timed.
+# MODE=static: the libraries and the benchmarks are built into one module
+# with the runtime (bin/clysm build: the systems of the file's QL:QUICKLOAD
+# form, then the file from its RUN-BENCH on) and run as a compiled program,
+# instead of loaded into the REPL image from fasls.
 set -e
 export LC_ALL=C   # sort and join must agree on the order (a Japanese locale drops items)
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -17,7 +21,19 @@ trap 'rm -rf "$TMP"' EXIT
 ms() { echo $(( $(date +%s%N) / 1000000 )); }   # (uutils date: %3N is not zero-padded)
 # warm the fasl caches (libraries are compiled once)
 sbcl --noinform --non-interactive --load "$FILE" >/dev/null 2>&1 || true
-"$ROOT/bin/clysm" script "$FILE" >/dev/null 2>&1 || true
+if [ "$MODE" = static ]; then
+  # (the systems loaded by the head of the file; the rest is the program)
+  SYSTEMS="$(sed -n "s/.*ql:quickload '(\([^)]*\)).*/\1/p" "$FILE" | tr -d ':' | head -1)"
+  awk '/^\(defun run-bench/{p=1} p' "$FILE" > "$TMP/program.lisp"
+  "$ROOT/bin/clysm" build $(for s in $SYSTEMS; do printf -- '--system %s ' "$s"; done) \
+      "$TMP/program.lisp" -o "$TMP/program.wasm" >"$TMP/build.log" 2>&1 \
+    || { tail -20 "$TMP/build.log" >&2; echo "bench-libs: the static build failed" >&2; exit 1; }
+  # (run where the file is: it names files relative to itself)
+  clysm_run() { (cd "$(dirname "$FILE")" && "$ROOT/bin/clysm" exec "$TMP/program.wasm"); }
+else
+  "$ROOT/bin/clysm" script "$FILE" >/dev/null 2>&1 || true
+  clysm_run() { "$ROOT/bin/clysm" script "$FILE"; }
+fi
 if [ -n "$SELFHOST" ]; then
   [ -f "$ROOT/build/clysmc.wasm" ] && [ -z "$(find "$ROOT/src" "$ROOT/runtime" -newer "$ROOT/build/clysmc.wasm" -name '*.lisp' | head -1)" ] \
     || "$ROOT/tools/build-selfhost.sh" >/dev/null 2>&1
@@ -26,7 +42,7 @@ fi
 i=0
 while [ $i -lt "$RUNS" ]; do
   sbcl --noinform --non-interactive --load "$FILE" 2>&1 | grep '^[a-z]-' >> "$TMP/a.raw"
-  "$ROOT/bin/clysm" script "$FILE" 2>&1 | grep '^[a-z]-' >> "$TMP/b.raw"
+  clysm_run 2>&1 | grep '^[a-z]-' >> "$TMP/b.raw"
   # compiling bench/suite.lisp with the runtime: the same compiler on SBCL and in Wasm
   if [ -n "$SELFHOST" ]; then
   t0=$(ms); sbcl --script "$ROOT/tools/build.lisp" "$TMP/a.wasm" "$ROOT/bench/suite.lisp" >/dev/null 2>&1; t1=$(ms)

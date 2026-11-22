@@ -150,8 +150,10 @@
                             (return (simple-eval (car forms))))))))
     (:declaim (let ((specs (cadr tree)))
                 (sys::%call-with-world-lock
-                 (lambda () (let ((*live-mode* t) (*live-packages* t) (*read-package* *package*))
-                              (dolist (d specs) (compile-time-proclaim d)))))
+                 (lambda () (call-in-live-state
+                             (lambda ()
+                               (let ((*live-mode* t) (*live-packages* t) (*read-package* *package*))
+                                 (dolist (d specs) (compile-time-proclaim d)))))))
                 (sys::%proclaim-list specs)))
     (:call (let ((f (fdefinition (cadr tree))))
              (apply f (mapcar #'simple-eval (cddr tree)))))))

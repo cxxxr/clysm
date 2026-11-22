@@ -25,7 +25,10 @@
 
 (let ((*compile-verbose* nil) (*load-verbose* nil))
   (handler-bind ((warning #'muffle-warning))
-    (funcall (intern "QUICKLOAD" "QL") '("lem/core" "lem-lisp-syntax") :silent t)
+    ;; (LEM_BENCH_DEFINE_ONLY: the systems are only defined, for
+    ;; `clysm build`, which loads them itself: tools/bench-lem.sh, MODE=static)
+    (unless (uiop:getenv "LEM_BENCH_DEFINE_ONLY")
+      (funcall (intern "QUICKLOAD" "QL") '("lem/core" "lem-lisp-syntax") :silent t))
     ;; the Lisp grammar (without the rest of the Lisp mode), the fake display
     ;; of Lem's tests, and the benchmark: compiled to fasls like the rest
     (eval `(asdf:defsystem "lem-bench-support"
@@ -38,4 +41,5 @@
              :depends-on ("lem-bench-support")
              :pathname ,*bench-dir*
              :components ((:file "buffer-bench"))))
-    (asdf:load-system "lem-buffer-bench")))
+    (unless (uiop:getenv "LEM_BENCH_DEFINE_ONLY")
+      (asdf:load-system "lem-buffer-bench"))))

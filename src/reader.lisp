@@ -22,15 +22,33 @@
   (dolist (n nicknames) (setf (gethash n *target-packages*) host-pkg))
   host-pkg)
 
+(defvar *image-packages* nil
+  "True while a program is compiled as a whole in the image that builds it
+(src/static.lisp): a target package is the image's own package of that
+name, registered when it is first met.")
+
+(defun image-target-package (pkg)
+  "The name of the target package that the image's package PKG is (see
+*IMAGE-PACKAGES*), registered now if it was not."
+  (or (gethash pkg *host->target-name*)
+      (let ((name (package-name pkg)))
+        (and name
+             (progn (register-target-package name pkg (copy-list (package-nicknames pkg)))
+                    name)))))
+
 (defun find-target-package (name &optional (errorp t))
   (let ((name (if (packagep name) (return-from find-target-package name) (string name))))
     (or (gethash name *target-packages*)
+        (and *image-packages*
+             (let ((p (find-package name)))
+               (and p (image-target-package p) p)))
         (and errorp (error "Clysm reader: unknown package ~A" name)))))
 
 (defvar *live-packages* nil "in live mode, packages map to themselves")
 
 (defun target-package-name (host-pkg)
   (or (gethash host-pkg *host->target-name*)
+      (and *image-packages* (image-target-package host-pkg))
       (and *live-packages* (package-name host-pkg))
       (error "host package ~A is not a target package" host-pkg)))
 
@@ -45,6 +63,8 @@ and macro expanders can use target package names."
 
 (defun ensure-host-package-for (name)
   (or (find-target-package name nil)
+      (and *image-packages*
+           (let ((p (make-package name :use nil))) (image-target-package p) p))
       (let ((hp (or (find-package (format nil "CLYSM-T/~A" name))
                     (make-package (format nil "CLYSM-T/~A" name) :use nil))))
         (add-host-nicknames hp (list name))
@@ -56,7 +76,8 @@ and macro expanders can use target package names."
   (register-target-package "KEYWORD" (find-package :keyword) '())
   (register-target-package "SYSTEM" (find-package :clysm-sys) '("SYS"))
   (register-target-package "COMMON-LISP-USER"
-                           (or (find-package :clysm-user) (make-package :clysm-user :use '(:cl)))
+                           (or (and *image-packages* (find-package "COMMON-LISP-USER"))
+                               (find-package :clysm-user) (make-package :clysm-user :use '(:cl)))
                            '("CL-USER")))
 
 (init-target-packages)

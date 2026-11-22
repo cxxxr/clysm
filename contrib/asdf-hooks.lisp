@@ -375,6 +375,15 @@ noting that, next to where the system fasl goes)."
                  (pushnew (component-name system) *clysm-system-fasls-loaded* :test #'string=)
                  (mark-operation-done o c)))))))
 
+;;; A program built in the image (`clysm build`, src/static.lisp): a source
+;;; file about to be loaded is compiled into the program first, where the
+;;; files before it are loaded and it is not, as when it was compiled.
+(defmethod perform :before ((o load-op) (c cl-source-file))
+  (let* ((package (find-package "CLYSM"))
+         (variable (and package (find-symbol "*STATIC-FILE-HOOK*" package)))
+         (hook (and variable (boundp variable) (symbol-value variable))))
+    (when hook (funcall hook c))))
+
 ;;; (not on SYSTEM: the method above, for Quicklisp, has those specializers)
 (defmethod perform :after ((o load-op) (s parent-component))
   (let ((pass (gethash s *clysm-system-fasl-state*)))

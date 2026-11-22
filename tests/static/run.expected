@@ -1,0 +1,14 @@
+load order: (:UTIL :SHAPES :REGISTRY)
+units: ((GEOM-UTIL::METER . 100) (GEOM-UTIL::KILOMETER . 100000)) scale 100
+disc of area 1200
+slab of area 1200
+a point at 3,4
+a thing: 42
+norm2 25
+table 1000 2 octets #(1 2 3 250) PATHNAME
+collected (1 1 2)
+tags :ORIGIN T (:A 1 "x" :B)
+found AREA 49
+within NIL T
+error: no shape "cube"
+static

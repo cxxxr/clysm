@@ -24,6 +24,8 @@
 # script` does; SBCL loads the same systems, with the same stubs, with the
 # ASDF of third_party/asdf (SBCL's own is too old for Lem).
 # Each side runs BENCH_RUNS times (default 3); the best time is used.
+# MODE=static: Lem's systems and the benchmark are built into one module
+# with the runtime and ASDF (bin/clysm build) and run as a compiled program.
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 NURSERY="--max-semi-space-size=${CLYSM_NURSERY_MB:-256}"   # as bin/clysm starts the image
@@ -51,16 +53,29 @@ cat > "$TMP/clysm.lisp" <<EOF
 (lem-buffer-bench:main "$FILE")
 EOF
 IMAGE="$("$ROOT/bin/clysm" image-native)"
-# (the first run compiles what is missing)
-node $NURSERY "$ROOT/host/run.mjs" "$IMAGE" "$TMP/clysm.lisp" > "$TMP/first.txt" 2>&1 ||
-  { tail -20 "$TMP/first.txt"; exit 1; }
+if [ "$MODE" = static ]; then
+  cat > "$TMP/setup.lisp" <<EOF
+(require :asdf)
+(require :quicklisp)
+(load "$ROOT/tests/lem/load-lem.lisp")
+EOF
+  LEM_BENCH_DEFINE_ONLY=1 "$ROOT/bin/clysm" build --asdf --load "$TMP/setup.lisp" --system lem-buffer-bench \
+      --eval '(lem-buffer-bench:main (first (sys::%command-line-arguments)))' -o "$TMP/lem.wasm" > "$TMP/first.txt" 2>&1 ||
+    { tail -20 "$TMP/first.txt"; exit 1; }
+  clysm_run() { "$ROOT/bin/clysm" exec "$TMP/lem.wasm" "$FILE"; }
+else
+  # (the first run compiles what is missing)
+  node $NURSERY "$ROOT/host/run.mjs" "$IMAGE" "$TMP/clysm.lisp" > "$TMP/first.txt" 2>&1 ||
+    { tail -20 "$TMP/first.txt"; exit 1; }
+  clysm_run() { node $NURSERY "$ROOT/host/run.mjs" "$IMAGE" "$TMP/clysm.lisp"; }
+fi
 i=0
 while [ $i -lt "$RUNS" ]; do
   sbcl --noinform --non-interactive --eval '(require :asdf)' --eval "(load \"$ROOT/build/asdf-sbcl.fasl\")" \
        --eval '(load (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname)))' \
        --load "$ROOT/tests/lem/load-lem.lisp" --eval "(lem-buffer-bench:main \"$FILE\")" 2>&1 |
     grep '^l-' >> "$TMP/a.raw"
-  node $NURSERY "$ROOT/host/run.mjs" "$IMAGE" "$TMP/clysm.lisp" 2>&1 | grep '^l-' >> "$TMP/c.raw"
+  clysm_run 2>&1 | grep '^l-' >> "$TMP/c.raw"
   i=$((i+1))
 done
 best "$TMP/a.raw" > "$TMP/a.txt"; best "$TMP/c.raw" > "$TMP/b.txt"

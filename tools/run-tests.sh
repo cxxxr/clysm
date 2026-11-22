@@ -7,6 +7,8 @@
 # (bin/clysm image-native): every toplevel form is compiled to Wasm at run time.
 # With SELFHOST=1 the files are compiled by the compiler running in Wasm
 # (build/clysmc.wasm, see tools/build-selfhost.sh).
+# With STATIC=1 they are compiled as whole programs by the compiler of the
+# REPL image (bin/clysm build, src/static.lisp).
 # With SHAKE=1 they are compiled with --shake (the functions nothing refers
 # to are left out).
 cd "$(dirname "$0")/.." || exit 1
@@ -26,7 +28,9 @@ for f in ${@:-tests/cases/*.lisp}; do
   elif [ -n "$INTERP" ]; then
     timeout 60 node $NURSERY host/run.mjs "$(bin/clysm image-interp)" "$f" > "build/tests/$name.out" 2> "build/tests/$name.err"
   else
-    if [ -n "$SELFHOST" ]; then
+    if [ -n "$STATIC" ]; then
+      compile="bin/clysm build -o"
+    elif [ -n "$SELFHOST" ]; then
       compile="node host/run.mjs build/clysmc.wasm"
     else
       compile="sbcl --script tools/build.lisp${SHAKE:+ --shake}"
