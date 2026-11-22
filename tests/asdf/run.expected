@@ -11,3 +11,9 @@ system fasl: T
 (21 (1 1) 14 7 4) 3 2 T
 (21 (1 1) 35 7 4) 6 3 NIL
 (21 (1 1) 35 7 4) 6 4 T
+first: 21 2 system fasl NIL
+again: 21 2 system fasl T
+edited: 22 4 system fasl NIL
+edited again: 23 5 system fasl NIL
+reset: 23 7 system fasl NIL
+again: 23 7 system fasl T
