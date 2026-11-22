@@ -3072,6 +3072,39 @@ to FAIL.  M is a local for limbs."
     (:local.get va) (:i32.const 32) :i64x2.shr_u :i64x2.add (:local.set vh)
     (:local.get pb) (:i32.const 16) :i32.add (:local.set pb)
     (:local.get pa) (:i32.const 16) :i32.add (:local.set pa)))
+(defun short-product-locals (n)
+  (append '((a (:ref :null :limbs)) (b (:ref :null :limbs))
+            (p :i64) (lo :i64) (hi :i64) (carry :i64))
+          (loop for prefix in '("A" "B") append
+            (loop for j below n collect (list (intern (format nil "~A~D" prefix j) :clysm) :i64)))
+          (loop for j below (* 2 n) collect (list (intern (format nil "R~D" j) :clysm) :i32))))
+(defun short-product-code (n)
+  "N by N digits in registers, each output column stored once."
+  (labels ((loc (prefix j) (intern (format nil "~A~D" prefix j) :clysm)))
+    `((:local.get 0) (:ref.cast! :limbs) (:local.set a)
+      (:local.get 1) (:ref.cast! :limbs) (:local.set b)
+      ,@(loop for (arr prefix) in '((a "A") (b "B")) append
+         (loop for j below n append
+           `((:local.get ,arr) (:i32.const ,j) (:array.get :limbs)
+             :i64.extend_i32_u (:local.set ,(loc prefix j)))))
+      ,@(loop for k below (1- (* 2 n)) append
+         `((:local.get carry) (:local.set lo) (:i64.const 0) (:local.set hi)
+           ,@(loop for i from (max 0 (- k (1- n))) to (min k (1- n)) append
+              `((:local.get ,(loc "A" i)) (:local.get ,(loc "B" (- k i))) :i64.mul (:local.set p)
+                (:local.get lo) (:local.get p) (:i64.const #xffffffff) :i64.and :i64.add (:local.set lo)
+                (:local.get hi) (:local.get p) (:i64.const 32) :i64.shr_u :i64.add (:local.set hi)))
+           (:local.get lo) :i32.wrap_i64 (:local.set ,(loc "R" k))
+           (:local.get lo) (:i64.const 32) :i64.shr_u (:local.get hi) :i64.add (:local.set carry)))
+      (:local.get carry) :i32.wrap_i64 (:local.set ,(loc "R" (1- (* 2 n))))
+      ,@(loop for j below (* 2 n) collect `(:local.get ,(loc "R" j)))
+      (:array.new_fixed :limbs ,(* 2 n)))))
+(defhelper* :mag-mul3 :ee-e (short-product-locals 3) (short-product-code 3))
+(defhelper* :mag-mul4 :ee-e (short-product-locals 4) (short-product-code 4))
+(defhelper* :mag-mul5 :ee-e (short-product-locals 5) (short-product-code 5))
+(defhelper* :mag-mul6 :ee-e (short-product-locals 6) (short-product-code 6))
+(defhelper* :mag-mul7 :ee-e (short-product-locals 7) (short-product-code 7))
+(defhelper* :mag-mul8 :ee-e (short-product-locals 8) (short-product-code 8))
+
 (defhelper :mag-mul :ee-e ((a (:ref :null :limbs)) (b (:ref :null :limbs)) (r (:ref :null :limbs))
                            (la :i32) (lb :i32) (k :i32) (i :i32) (iend :i32) (lo :i64) (hi :i64) (p :i64)
                            (c :i64) (pa :i32) (pb :i32) (ob :i32) (sq :i32)
@@ -3080,6 +3113,12 @@ to FAIL.  M is a local for limbs."
   '(:local.get 0) '(:call :mag-len) '(:local.set la) '(:local.get 1) '(:call :mag-len) '(:local.set lb)
   '(:local.get la) :i32.eqz '(:local.get lb) :i32.eqz :i32.or
   '(:if nil nil ((:i32.const 0) (:array.new_default :limbs) :return))
+  `(:block short nil
+     (:local.get la) (:local.get lb) :i32.ne (:br_if short)
+     ,@(loop for n from 3 to 8 append
+        `((:local.get la) (:i32.const ,n) :i32.eq
+          (:if nil nil ((:local.get a) (:local.get b)
+                        (:return_call ,(intern (format nil "MAG-MUL~D" n) :keyword)))))))
   '(:local.get la) '(:local.get lb) :i32.add '(:array.new_default :limbs) '(:local.set r)
   `(:local.get la) `(:local.get lb) :i32.lt_u `(:if nil :i32 ((:local.get la)) ((:local.get lb)))
   `(:i32.const ,+mag-mul-row-max+) :i32.le_u
