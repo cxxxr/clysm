@@ -1286,7 +1286,7 @@ BINDINGS, a list of (symbol . local holding the new value), in order."
                   append `((:global.get ,(sym-global sym)) (:local.get ,tmp) (:call :bind))))
         (let ((st (new-local '(:ref :null :vector))))
           `(,@(bsp-code) (:local.tee ,saved) (:i32.const ,(* 2 n)) :i32.add
-            ,@(bstack-code) :array.len :i32.gt_u
+            ,@(bstack-code) :array.len :i32.gt_u (:hint 0)
             (:if nil nil ((:call :grow-bstack)))
             ,@(bstack-code) (:local.set ,st)
             ,@(loop for (sym . tmp) in bindings for i from 0 by 2
@@ -2952,7 +2952,7 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
            (body-code (let ((*tail-ok* nil) (*uwp-depth* (1+ *uwp-depth*))
                             (*uwp-frames* (cons frame *uwp-frames*)))
                         (with-pctx (:eqref) (cg form mv)))))
-      (let* ((cleanup-code (let ((*tail-ok* nil)) `(,@(cg cleanup) :drop)))
+      (let* ((cleanup-code (let ((*tail-ok* nil)) (cg-effect cleanup)))
              (normal-code (if mv
                              `((:local.get ,res) (:call :mv-save) (:local.set ,mvsave)
                                ,@cleanup-code
