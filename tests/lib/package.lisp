@@ -93,7 +93,9 @@ export type Places = Place[];" :entry "places")
 (js:export "awaitThrough" (lambda (f) (js:await (js:funcall f))) :async t
            :type "(f: () => Promise<unknown>) => Promise<unknown>")
 ;; a Lisp error is still a LispError
-(js:export "lispError" (lambda () (error "a Lisp error")) :type "() => never")
+(defun check-in-lisp (x) (error "a Lisp error ~A" x))
+(defun fails-in-lisp () (check-in-lisp 1) nil)
+(js:export "lispError" #'fails-in-lisp :type "() => never")
 
 (js:export "firstPlace" (lambda (places) (js:get places 0)) :entry "places"
            :type "(places: Places) => Place")

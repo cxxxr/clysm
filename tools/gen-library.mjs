@@ -17,9 +17,11 @@ const name = path.basename(wasmPath, '.wasm');
 // The names and places of the functions (the custom sections name and
 // clysm.sources, 7 % of a module) go to NAME.wasm.debug, a module of those
 // sections only, which the host reads when it first maps a stack trace
-// (host/lib.mjs): a page or a package can leave it out.
+// (host/lib.mjs): a page or a package can leave it out.  (A library whose
+// modules hold its module holds them too: the module as it was compiled.)
+const compiled = fs.readFileSync(wasmPath);
 {
-  const bytes = fs.readFileSync(wasmPath);
+  const bytes = compiled;
   const leb = (p) => { let x = 0, s = 0, c; do { c = bytes[p++]; x |= (c & 127) << s; s += 7; } while (c & 128); return [x >>> 0, p]; };
   const keep = [bytes.subarray(0, 8)], debug = [bytes.subarray(0, 8)];
   let p = 8;
@@ -147,7 +149,7 @@ const outputOptions = toStderr
 // (JS:LIBRARY-OPTIONS :EMBED: the module's bytes are in its modules, which load it with the host
 // of host/web/lib.mjs, of no Node.js: a page, a browser's worker, Electron's renderer, Node.js)
 const embed = info.options?.embed === true;
-const embedded = embed ? fs.readFileSync(wasmPath).toString('base64') : null;
+const embedded = embed ? compiled.toString('base64') : null;
 const loaderImport = embed
   ? "import { bytesOfBase64, loadSync } from './clysm/web/lib.mjs';"
   : "import { loadSync } from './clysm/lib.mjs';";
@@ -176,7 +178,7 @@ if (info.options?.lazy) {
 ${loaderImport}
 import { makeClass } from './clysm/jsffi.mjs';
 
-${embed ? `// The module, in base64 (${fs.statSync(wasmPath).size} bytes).\nconst embedded = '${embedded}';\nlet source = null;` : `let source = new URL('./${name}.wasm', import.meta.url);`}
+${embed ? `// The module, in base64 (${compiled.length} bytes, with the names of its functions).\nconst embedded = '${embedded}';\nlet source = null;` : `let source = new URL('./${name}.wasm', import.meta.url);`}
 let given = {};
 let lib = null;
 ${embed ? `const __clysm_defaults = ${embeddedOptions};\n` : outputOptions}
@@ -235,7 +237,7 @@ export {};
 ${embed ? `import { moduleOfBase64 as __clysm_module_of, loadSync as __clysm_load } from './clysm/web/lib.mjs';
 
 const __clysm_defaults = ${embeddedOptions};
-// The module, in base64 (${fs.statSync(wasmPath).size} bytes).
+// The module, in base64 (${compiled.length} bytes, with the names of its functions).
 const __clysm_module = __clysm_module_of('${embedded}');
 const __clysm_lib = __clysm_load(__clysm_module, __clysm_defaults);
 export const create = async (options) => __clysm_load(__clysm_module, { ...__clysm_defaults, ...options });` : `import { load as __clysm_load } from './clysm/lib.mjs';

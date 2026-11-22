@@ -19,6 +19,8 @@
 //   outputToErrors  the standard output goes where the error output does
 //   modules   an object of JavaScript modules that Lisp gets with (js:module "name")
 //   import    the function that (js:import "specifier") calls (by default import())
+//   debug     the bytes of the names and places of the module's functions
+//             (NAME.wasm.debug), for stack traces, when the module has none
 //   classes   the classes of JS:DEFINE-CLASS, by name, that the modules of a
 //             lazy library made before loading it (they get their functions)
 import { makeImports, installSourceMap } from '../common.mjs';
@@ -67,7 +69,8 @@ export function loadSync(source, options = {}) {
     is_tty() { return 0; },
   };
   const imports = makeImports(state, platform);
-  installSourceMap(state, module);
+  // (the names and places of the functions: in the module, or given as the bytes of its .debug)
+  installSourceMap(state, module, options.debug ? () => options.debug : null);
   const instance = new WebAssembly.Instance(module, imports);
   state.instance = instance;
   const exportsObject = {};

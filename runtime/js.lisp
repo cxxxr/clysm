@@ -286,7 +286,8 @@ stack, the binding stack and depth outside it, and its own depth while it waits.
     if (/^\\s*at (ERROR|%ERROR\\*|CERROR|SIGNAL|%SIGNAL\\*|%SIGNAL-CONDITION|%TYPE-ERROR|%CHECK-TYPE-ERROR|INVOKE-DEBUGGER)[#( ]/.test(lines[i])) first = i + 1;
   }
   if (first === 1) {
-    while (first < lines.length && !/\\(wasm:/.test(lines[first])) first++;
+    // (a frame of Wasm, named or not: \"at NAME (wasm://...)\" or \"at wasm://...\")
+    while (first < lines.length && !/wasm:/.test(lines[first])) first++;
   }
   // (the host names the places of the Lisp frames: file and line)
   error.stack = ['LispError: ' + message]

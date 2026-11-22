@@ -26,8 +26,14 @@ const places = await import(url(`places${ext}`));
 if (lazy) {
   // nothing is loaded yet: the library can still be given another module
   const { useLibrary } = await import(url(`package.library${ext}`));
-  // (an embedded library is given another module as its bytes)
-  useLibrary(embedded ? fs.readFileSync(path.join(dir, 'package.wasm')) : new URL(url('package.wasm')));
+  // (an embedded library is given another module as its bytes, and the names of its functions
+  // as the bytes of its .debug)
+  if (embedded) {
+    useLibrary(fs.readFileSync(path.join(dir, 'package.wasm')),
+               { debug: fs.readFileSync(path.join(dir, 'package.wasm.debug')) });
+  } else {
+    useLibrary(new URL(url('package.wasm')));
+  }
 }
 assert.equal(lib.version, 113);
 assert.deepEqual([...lib.names], ['a', 'b']);
@@ -90,7 +96,9 @@ for (const [kind, value] of [['undefined', undefined], ['false', false], ['7', 7
 }
 await assert.rejects(lib.awaitThrough(() => Promise.reject(thrown)), (err) => err === thrown);
 assert.equal(await lib.awaitThrough(() => Promise.resolve(4)), 4);
-assert.throws(() => lib.lispError(), (err) => err.name === 'LispError' && /a Lisp error/.test(err.message));
+assert.throws(() => lib.lispError(), (err) => err.name === 'LispError' && /a Lisp error/.test(err.message)
+                                    // (the frames of Lisp, named: an embedded library holds the names too)
+                                    && /\n\s+at (CHECK|FAILS)-IN-LISP \(tests\/lib\/package\.lisp:\d+\)/.test(err.stack));
 assert.deepEqual(places.firstPlace([{ kind: 'line', line: 3 }]), { kind: 'line', line: 3 });
 
 // the types: of the exports, of the classes and those declared
