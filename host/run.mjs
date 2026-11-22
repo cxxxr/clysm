@@ -633,6 +633,108 @@ const stackMb = () => Number(process.env.CLYSM_STACK_MB || 1024);
 // generation is three semi-spaces); the main thread's heap is made before
 // this file runs, so bin/clysm gives node --max-semi-space-size.
 const nurseryMb = () => Number(process.env.CLYSM_NURSERY_MB || 256);
+// Whether the young generation of a worker grows past the engine's own
+// limit (64 MB a semi-space) is decided by what its scavenges keep
+// ("Allocation, garbage collection and the engine's flags" in
+// docs/INTERNALS.md).  The engine grows it when what survived since it last
+// grew is more than its size, however little of each scavenge that is: a
+// program that keeps part of everything (a compiler) ends with 256 MB that
+// save it nothing and cost memory, page faults and longer pauses.  Growing
+// pays when what a scavenge keeps dies soon after (a larger space keeps a
+// smaller part), or when it keeps nearly all.  nurseryControl runs in the
+// worker every 50 ms (superviseNursery below asks for it from the main
+// thread; the worker itself never returns to its event loop while the
+// program runs): from the collections since its last run (v8.GCProfiler)
+// it takes the part of the young generation that each scavenge of
+// semi-spaces of 64 MB or more kept, and sets --semi-space-growth-factor,
+// which the engine reads at each growth, to 1 (nothing grows) or 2:
+//   - growth, as the engine decides, until two scavenges at the present
+//     size have been seen (it needs several that keep little before it
+//     grows, one or two that keep much);
+//   - then growth while they keep 80% or more, or 15% or more unless the last
+//     growth was of no use (the part kept is more than 0.7 of what it was
+//     at the size before), which holds until they keep 25 points more than
+//     they did then (the program does something else).
+// CLYSM_NURSERY_ADAPT=0: the engine decides alone.
+const NURSERY_EARNED = 64 << 20;
+function nurseryControl(v8) {
+  let profiler = null, size = 0, kept = 0, count = 0, keptBefore = -1, useless = false, keptUseless = 0, factor = 2, runs = 0, oldBefore = 0;
+  const space = (stats, name) => stats.heapSpaceStatistics.find((s) => s.spaceName === name);
+  return () => {
+    // (the profiler records the heap at each collection: only while the
+    // semi-spaces are of 32 MB or more, when scavenges are tens a second;
+    // those of a young generation of 1 MB are thousands)
+    const spaces = v8.getHeapSpaceStatistics(), now = spaces.find((s) => s.space_name === 'new_space');
+    const oldUsed = spaces.find((s) => s.space_name === 'old_space')?.space_used_size ?? 0;
+    const promoting = oldUsed - oldBefore >= size / 10;   // (since the last run: much survives now)
+    oldBefore = oldUsed;
+    const large = now && now.space_size >= NURSERY_EARNED;   // (two semi-spaces of 32 MB)
+    const report = profiler && profiler.stop();
+    // (and once there is nothing to decide, the limit reached or no growth
+    // for four scavenges, only while the old generation gains a tenth of a
+    // semi-space between two runs, and one run in twenty: recording the
+    // heap at each scavenge was 5% of the time of a program whose garbage
+    // dies young in semi-spaces of 64 MB)
+    const settled = size >= (nurseryMb() << 20) || (factor === 1 && count >= 4);
+    profiler = large && (!settled || promoting || ++runs % 20 === 0) ? new v8.GCProfiler() : null;
+    profiler?.start();
+    let semi = 0;
+    for (const gc of report?.statistics ?? []) {
+      if (gc.gcType !== 'Scavenge') continue;
+      const young = space(gc.beforeGC, 'new_space'), youngAfter = space(gc.afterGC, 'new_space');
+      const old = space(gc.beforeGC, 'old_space'), oldAfter = space(gc.afterGC, 'old_space');
+      if (!young || !youngAfter || !old || !oldAfter || !young.spaceUsedSize) continue;
+      semi = young.spaceSize / 2;
+      if (semi !== size) { keptBefore = size && count >= 2 && semi > size ? kept : -1; size = semi; kept = 0; count = 0; }
+      const k = Math.min(1, (youngAfter.spaceUsedSize + Math.max(0, oldAfter.spaceUsedSize - old.spaceUsedSize))
+                            / young.spaceUsedSize);
+      kept = count ? 0.6 * kept + 0.4 * k : k;
+      count++;
+    }
+    if (!semi) return factor;
+    let grow = true;
+    if (size >= NURSERY_EARNED) {
+      if (count >= 2) {
+        // (what the size before kept is compared once, with what the program did then)
+        if (kept >= 0.8 || (useless && kept > keptUseless + 0.25)) { useless = false; keptBefore = -1; }
+        else if (!useless && keptBefore >= 0 && kept > 0.7 * keptBefore) { useless = true; keptUseless = kept; }
+        grow = kept >= 0.8 || (kept >= 0.15 && !useless);
+      }
+    }
+    const f = grow ? 2 : 1;
+    if (f !== factor) { factor = f; v8.setFlagsFromString('--semi-space-growth-factor=' + f); }
+    if (process.env.CLYSM_NURSERY_TRACE) console.error(`;; nursery: semi ${size >> 20} MB, kept ${kept.toFixed(2)} (${count}), before ${keptBefore.toFixed(2)}, factor ${f}`);
+    return factor;
+  };
+}
+// The main thread asks the worker to run nurseryControl: through the
+// inspector (the NodeWorker domain), whose messages a worker handles at its
+// next stack check even while it runs the program, where a message of the
+// thread's own port would wait for the event loop.  Started 250 ms after the
+// worker (a young generation takes longer than that to reach 64 MB), so a
+// short program does not load the inspector.
+async function superviseNursery() {
+  try {
+    const inspector = await import('node:inspector');
+    const session = new inspector.Session();
+    session.connect();
+    let id = 0, waiting = 0;
+    session.on('NodeWorker.attachedToWorker', (m) => {
+      const sessionId = m.params.sessionId;
+      setInterval(() => {
+        if (waiting >= 2) return;
+        waiting++;
+        session.post('NodeWorker.sendMessageToWorker', {
+          sessionId,
+          message: JSON.stringify({ id: ++id, method: 'Runtime.evaluate',
+                                    params: { expression: 'globalThis.__clysm_nursery?.()', returnByValue: true } }) });
+      }, 50).unref();
+    });
+    session.on('NodeWorker.receivedMessageFromWorker', () => { if (waiting) waiting--; });
+    session.post('NodeWorker.enable', { waitForDebuggerOnStart: false });
+  } catch (e) {}
+}
+const nurseryAdapts = () => process.env.CLYSM_NURSERY_ADAPT !== '0' && nurseryMb() > 64;
 
 async function inMainThread() {
   const env = process.env;
@@ -696,6 +798,7 @@ async function runProgram(data, port, netBuffer) {
     const kb = stackMb() * 1024;
     v8.setFlagsFromString('--wasm-stack-switching-stack-size=' + kb);
     v8.setFlagsFromString('--stack-size=' + kb);
+    if (!isMainThread && nurseryAdapts()) globalThis.__clysm_nursery = nurseryControl(v8);
   } catch (e) {}
   mark('flags set');
   // with CLYSM_IMAGE=FILE, the image starts from the heap image FILE if it
@@ -800,6 +903,7 @@ if (isMainThread && process.argv[1] === selfPath) {
     makeNetServer(worker, netBuffer);
     worker.on('error', (e) => { console.error(';; worker error:', e); process.exit(2); });
     worker.on('exit', (code) => process.exit(code));
+    if (nurseryAdapts()) setTimeout(superviseNursery, 250).unref();
   }
 } else if (!isMainThread && workerData && workerData.netServer) {
   // the sockets and processes of a program in the main thread

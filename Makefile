@@ -7,7 +7,7 @@ build/clysm-native.wasm:
 	sbcl --script tools/build-repl.lisp $@
 
 repl: all
-	node host/run.mjs build/clysm-native.wasm
+	node --max-semi-space-size=256 host/run.mjs build/clysm-native.wasm
 
 test:
 	tools/run-tests.sh

@@ -7,6 +7,7 @@
 cd "$(dirname "$0")/../.." || exit 1
 [ -f third_party/ansi-test/rt.lsp ] || git submodule update --init third_party/ansi-test
 IMAGE=$(bin/clysm image-native) || exit 1
+NURSERY="--max-semi-space-size=${CLYSM_NURSERY_MB:-256}"   # as bin/clysm starts the image
 CATS=${*:-"symbols eval-and-compile data-and-control-flow iteration objects conditions cons arrays hash-tables packages numbers sequences structures types-and-classes strings characters pathnames files streams printer reader system-construction environment misc"}
 TIMEOUT=${ANSI_TIMEOUT:-1800}   # whole process
 STALL=${ANSI_STALL:-30}          # seconds without progress before a test is considered hung
@@ -22,7 +23,7 @@ run_category() {
   start=0
   while :; do
     base=$(wc -c < "$log")
-    timeout "$TIMEOUT" node host/run.mjs "$IMAGE" tests/ansi/driver.lisp "$cat" "$start" >> "$log" 2>&1 &
+    timeout "$TIMEOUT" node $NURSERY host/run.mjs "$IMAGE" tests/ansi/driver.lisp "$cat" "$start" >> "$log" 2>&1 &
     pid=$!
     # watchdog: kill the run when the log stops growing (a hung test)
     size=-1; idle=0
