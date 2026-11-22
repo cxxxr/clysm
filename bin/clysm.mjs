@@ -5,7 +5,7 @@
 //   clysm compile [--shake] FILE... [-o OUT.wasm]
 //   clysm library [--shake] FILE... -o DIR/NAME.wasm   (NAME.wasm.debug, NAME.mjs, NAME.d.ts too)
 //   clysm run [--shake] FILE... [-- ARGS]
-//   clysm build [--system NAME]... [--asd FILE.asd]... [--load FILE]... [--eval FORM]... [-o OUT.wasm] [FILE...]
+//   clysm build [--system NAME]... [--asd FILE.asd]... [--load FILE]... [--asdf] [--shake] [--eval FORM]... [-o OUT.wasm] [FILE...]
 //                            (an application with its ASDF systems as one module)
 //   clysm exec OUT.wasm [ARGS]
 //   clysm test [--watch] [-j N] [--dom] [--system NAME [--asd FILE.asd]] FILE...
