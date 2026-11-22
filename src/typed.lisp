@@ -868,7 +868,7 @@ that kind; everything else goes to the helper, which handles every array."
          ;; (a subscript known to be a 32-bit integer, (+ i j) of fixnums: as
          ;; an i32; out of range it is beyond any dimension compared unsigned)
          (fx (i32-arg-p sub)) (ie (unless fx (new-local)))
-         (m (new-local '(:ref :null :mdarray))) (s (new-local)) (hit (gensym "HIT")))
+         (hit (gensym "HIT")))
     (progn
       (values `(,@(cg a) (:local.set ,e)
                 ,@(if fx
@@ -881,17 +881,24 @@ that kind; everything else goes to the helper, which handles every array."
                 (:block ,hit nil
                   (:local.get ,e) (:ref.test ,kind)
                   (:if nil nil ((:local.get ,e) (:ref.cast! ,kind) (:local.set ,d) (:br ,hit)))
-                  ,@(if header
-                        `((:local.get ,e) (:ref.test :mdarray) :i32.eqz (:hint 0) (:br_if ,slow)
-                          (:local.get ,e) (:ref.cast! :mdarray) (:local.tee ,m)
-                          ;; a one-dimensional header: the subscript below its dimension
-                          (:struct.get :mdarray 7) (:local.get ,k) :i32.le_u (:hint 0) (:br_if ,slow)
-                          (:local.get ,m) (:struct.get :mdarray 0) (:local.tee ,s) (:ref.test ,kind) :i32.eqz
-                          (:hint 0) (:br_if ,slow)
-                          (:local.get ,s) (:ref.cast! ,kind) (:local.set ,d)
-                          (:local.get ,m) (:struct.get :mdarray 3) (:ref.cast :i31) :i31.get_s
-                          (:local.get ,k) :i32.add (:local.set ,k))
-                        `((:br ,slow))))
+                  ,@(cond
+                      ((and header (member kind '(:vector :string)))
+                       ;; a one-dimensional header with the subscript below its
+                       ;; dimension: its storage and the index there, from the
+                       ;; helper (:HDR-LOCATE KIND), null for anything else
+                       `((:local.get ,e) (:local.get ,k) (:call (:hdr-locate ,kind))
+                         (:local.set ,k) (:local.tee ,d) :ref.is_null (:hint 0) (:br_if ,slow)))
+                      (header
+                       (let ((m (new-local '(:ref :null :mdarray))) (s (new-local)))
+                         `((:local.get ,e) (:ref.test :mdarray) :i32.eqz (:hint 0) (:br_if ,slow)
+                           (:local.get ,e) (:ref.cast! :mdarray) (:local.tee ,m)
+                           (:struct.get :mdarray 7) (:local.get ,k) :i32.le_u (:hint 0) (:br_if ,slow)
+                           (:local.get ,m) (:struct.get :mdarray 0) (:local.tee ,s) (:ref.test ,kind) :i32.eqz
+                           (:hint 0) (:br_if ,slow)
+                           (:local.get ,s) (:ref.cast! ,kind) (:local.set ,d)
+                           (:local.get ,m) (:struct.get :mdarray 3) (:ref.cast :i31) :i31.get_s
+                           (:local.get ,k) :i32.add (:local.set ,k))))
+                      (t `((:br ,slow)))))
                 (:local.get ,k) (:local.get ,d) :array.len :i32.lt_u :i32.eqz (:hint 0) (:br_if ,slow))
               kind d k
               (if fx
