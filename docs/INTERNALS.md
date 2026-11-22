@@ -870,6 +870,121 @@ mostly the same, but
   guarded copy of a fixnum function whose value is assigned back
   (`a-lcg`, `p-hash-fn`'s `xorshift`), a loop at top level in Liftoff.
 
+**Script against compiled, benchmark by benchmark** (2026-11-23). Each
+benchmark of `bench/suite`, `programs`, `gabriel`, `control`, `clos`,
+`holdout`, `library`, `functional`, `closures` and `arrays` was timed loaded
+from source and as a whole program (the same slot, the runs interleaved,
+best of three), and for those above 1.05 the profiles of both
+(`node --cpu-prof`, self time per function) and the emitted Wasm
+(`*live-dump*`, `tools/dump-func.lisp`) were compared. The times are those
+that the benchmarks print, after a first run of each: compiling is not in
+them. (It is in the time of the process: `bench/programs.lisp`, 870 lines,
+takes 7.1 s of CPU as a script, of which `live-compile-forms` 1.0 s: 0.8 s
+type inference and code generation, 0.13 s finishing and encoding the
+modules; reading the forms ahead and `%batch-passable-p` do not show.) What
+the differences are made of:
+
+* **A function of the runtime that the engine inlines in a whole program is
+  a call in a script.** `v-plist` (1.7: `get`, `getf`, `remprop`,
+  `get-properties`), `b-format` (the functions that the compiler macro of
+  `format` calls: `sys::%fmt-decimal`, `sys::%fmt-princ`), `p-equal`,
+  `v-find-adjustable` (`char-equal` under `find`), `p-coerce`, `p-symbols`,
+  `v-assoc-member`: in the whole program the profile has their time in the
+  benchmark's own function, in the script in the functions of the image.
+  The call costs 2 to 3 ns more than the inlined code (`b-format`: 36
+  million calls, 84 against 16 ms of self time in the benchmark's function).
+  *How the call is made is little of it*: with each such call of up to four
+  arguments made a call of an imported function (the image's entry for that
+  number of arguments, which the host asked the image for, from the closure,
+  when it instantiated the module; guarded by one `ref.eq` of the symbol's
+  function with that closure, a constant of the module) in place of the
+  call through the symbol's function cell, the closure's code and its
+  entry, `bench/suite.lisp` took 0.993 of its time, `library` 0.982 and
+  `programs` 0.992 (four rounds, the order of the two alternating;
+  `v-typep-runtime`, `p-clos-app`, `v-check-type` 0.89, `p-calc`,
+  `p-signal-warn` 0.92). Not kept for one percent: it needs a helper
+  exported by the image, a function type more in every module, the host
+  reading each module's imports, and works only for modules evaluated at
+  once (a module of a fasl or of a heap image has its imports resolved by
+  name). The engine inlines no imported function either.
+* **`#'1+` given to a function of the file** (`k-church` 2.5,
+  `k-generators` 1.2): the `funcall` of it is a `call_ref` whose target the
+  engine inlines in a whole program and cannot in a script (`1+` of the
+  image: 1.7 ns a call). A closure of the user's module doing the same
+  would not be `eq` to `#'1+`.
+* **Copies that made the callers too large.** `p-method-comb` (1.4): the
+  methods were in their caller's module and still not inlined, because each
+  copy of a small function that checks an argument carried a copy of
+  `sys::%type-error`'s call of `error`. Functions that
+  only signal an error keep no source now (`noreturn-source-p`,
+  `src/driver.lisp`): `p-method-comb` 61 → 49 ms (the whole program 45).
+* **The dispatch of `gethash` on the key** (`p-word-count` 1.5,
+  `b-hash-string`): `sys::%gethash-marked` and
+  `sys::%ht-put-other`, which the compiler macros call for a key that is no
+  fixnum, character or symbol, were calls into the image before the helper
+  of strings and lists. They keep their source (`*runtime-inline-also*`):
+  `p-word-count` 103 → 76 ms (80).
+* **A constructor named as its structure** (`p-struct-float` 1.27: `(vec3 x
+  y z)`) was taken for a recursive function, as its body mentions its name
+  in `(find-class 'vec3)`, and not copied into its callers
+  (`tree-calls-p`, `src/frontend.lisp`): 66 → 61 ms (54), the doubles no
+  longer made objects for the call.
+* **A guarded copy that is not one tree of arithmetic** (`p-hash-fn` 2.2):
+  the integer accumulators take the value of any copy that is an integer
+  within 64 bits (`cg-dual-i64`, described with the copies below): 96 → 45
+  ms (45).
+* `p-equal` (1.6): the two `"two"` of one form are one object in a compiled
+  file and two in a loaded one, where `equal` compares them character by
+  character. `p-signal-warn` (1.6), `p-clos-app`, `p-cnm-args`,
+  `c-cnm-class-change`: the runtime's signalling and dispatch calling the
+  user's closures and back, each a call between modules.
+
+Also measured and not kept:
+
+* **Sources of more functions of the runtime.** Of all its small functions
+  without a loop (806, +94 KB): `bench/library.lisp` 1.044 of its time
+  (`suite` 0.995, `programs` 0.989): a copy whose body calls two functions
+  of the image makes two calls between modules of one. Of those whose body
+  makes at most one call on any path (339 more, +44 KB): `programs` 0.988,
+  `library` 1.000, `suite` 0.994. Of those that call nothing (131 more, +17
+  KB): no difference from the selection kept (0.993 against 0.995 over 149
+  benchmarks).
+* **Larger batches**: 128 forms in place of 32: `programs` 1.020, `clos`
+  1.025, `control` 0.981, `gabriel` 0.989; 12 forms: 1.007, 1.019, 1.042,
+  0.995. The batches already end where they must (a `defclass`, a
+  `defstruct`, a `defmacro`: `bench/programs.lisp` is 9 batches and 6
+  forms compiled alone).
+
+(These two were measured with the variant always run after the build
+before it, which the measure below, with the order alternating, showed to
+cost the later one 1 to 2%.)
+
+A benchmark of some 20 ms measured after others in one process moves by 10
+to 20% with what ran before it (`p-handler-case` 37 or 45 ms, `v-hash-equalp`
+19 to 26, between builds that compile them to the same code), and the
+copies of `gethash`'s dispatch make the short hash benchmarks slower
+there while the same benchmarks alone, repeated three times as long, are
+faster (`v-hash-equalp` 88 → 58 ms): presumably the copy in the user's
+module starts in the engine's baseline tier, where the image's function was
+optimized by the benchmarks before.
+
+With what is kept (script time against the build before, and against the
+same file compiled, before → after; four rounds of compiled, before and
+after, the order of the last two alternating, best of four): `suite` 1.013
+(1.02 → 1.03), `programs` 0.986 (1.085 → 1.07), `gabriel` 0.981 (1.08 →
+1.06), `control` 0.995 (1.09 → 1.09), `clos` 0.981 (1.09 → 1.07), `holdout`
+0.970 (1.01 → 0.98), `library` 0.980 (1.14 → 1.115), `functional` 1.002
+(1.09), `closures` 0.988 (1.16 → 1.14), `arrays` 1.004 (1.01 → 1.02),
+`arith` 1.026 (0.98 → 1.00); all 251 benchmarks 0.992 (1.074 → 1.065).
+Slower: `v-hash-equalp` 18 → 23 ms and `a-hash-counts` 48 → 57 (the copies
+of the dispatch, see above), `p-seq-vector` 42 → 47. Whole programs are the
+same octets as before; `bench/libs.lisp` and `bench/apps.lisp`, whose
+libraries are fasls, 1.005 of their time (the later of two runs). The REPL
+image is 9.4 KB larger (8,875,571 → 8,884,982 octets), the module of one
+export unchanged (925,558). On top of it the imported entries above gave
+`library` 0.976, `suite` 0.987, `programs` 0.990, `control` 0.992, `clos`
+0.994 (same measure).
+
 **`compile-file` compiles a whole file into one module** (`src/live.lisp`,
 "Compilation units"; CLHS 3.2.2.3 lets the file compiler assume that a call
 of a function defined in the same file calls that definition). Calls between
@@ -940,7 +1055,16 @@ The small functions of `COMMON-LISP` in the REPL image (required parameters,
 no loop, at most 100 conses: `alphanumericp`, `char-upcase`, `fifth`...) keep
 their source the same way (`runtime-inline-source`, `src/driver.lisp`, set
 when the image starts: 60 KB), so code compiled in the image contains a copy
-of them as a whole program does. The guarded copies of small functions
+of them as a whole program does. So do the small functions of the runtime
+that their sources call, except those that only signal an error
+(`noreturn-source-p`: inside the copy of each small function that checks
+an argument, `endp` for one, `sys::%type-error` was copied too, as `(error
+'type-error :datum ... :expected-type ...)`, a keyed call with its two ways
+of passing the arguments on a path that does not run; the bodies of methods
+got too large for the engine to inline them), and the dispatch of
+`gethash` and `(setf gethash)` on the kind of the key
+(`*runtime-inline-also*`); see "Script against compiled, benchmark by
+benchmark" above. The guarded copies of small functions
 defined at the REPL (`live-inline-call`) take any lambda list (`&optional`,
 `&key` with constant keywords, `&rest`): `(kfun i :c 3)` of a function
 defined in an earlier form runs as fast as in a whole program. A body that
@@ -1072,7 +1196,21 @@ What remains:
   guard fails into the eqref local. `a-lcg` in the image 18 → 4 ms (as a
   whole program, 4; it was 26 before the integers beyond the fixnums
   stayed in i64), `bench/arith.lisp` in the image 0.875 of its time
-  before; the other files unchanged.
+  before; the other files unchanged. A copy that is other code (several
+  statements, assignments of its parameter: `p-hash-fn`'s `xorshift`) was
+  still made an integer at each assignment, a bignum struct for a value
+  between 2^29 and 2^32. When the copy's value is an integer within 64
+  bits whatever its argument (the type of the copy's body: it ends in
+  `logand` with a constant, `mod`, `ldb`...), the assignment is an update
+  of the accumulator too (2026-11-23, `int64-copy-p`): `cg-dual-i64` compiles the
+  copy to an i64 (`cg-rep`) stored in the variable's i64, the call that a
+  failed guard makes into its eqref local; and a `let` variable bound to an
+  accumulator in code compiled in the image (the argument of the guarded
+  copy, the copy's parameter) gets a pair of locals of its own, copied
+  from the accumulator's without making the integer (`dual-alias-src`).
+  `p-hash-fn` in a script 96 → 45 ms (the whole program 45).
+  `tests/cases/guarded-accumulators.lisp` (starts beyond 64 bits, not
+  integers, the function redefined to return a list).
 * Doubles in a loop's version (2026-11-21). Before the version (with the
   guards taken as true) is compiled, `version-typed-vars` finds the
   variables that are doubles there: all those assigned or bound in the

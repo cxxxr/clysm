@@ -636,14 +636,30 @@ COMMON-LISP in the files compiled are collected in *RECORDED-DEFINITIONS*
 (defvar *runtime-inline-sources* (make-hash-table :test 'eq)
   "While the runtime of the REPL image is compiled: symbol -> the source of its small function, or NIL.")
 (defparameter *runtime-inline-max-size* 100)
+(defparameter *runtime-inline-also* '(clysm-sys::%gethash-marked clysm-sys::%ht-put-other)
+  "Functions of the runtime (not of COMMON-LISP) that keep their source too:
+the dispatch of GETHASH and of (SETF GETHASH) on the kind of the key, which
+the compiler macros of both call for a key that is no fixnum, character or
+symbol; copied, a string or a list goes to its helper without a call into
+the image's module.")
+
+(defun noreturn-source-p (source)
+  "SOURCE, (lambda lambda-list . body), is a call of ERROR: a function that
+signals an error (SYS::%TYPE-ERROR).  A copy of it in each caller makes the
+caller larger for a path that does not run."
+  (let ((last (car (last (cddr source)))))
+    (and (consp last) (eq (car last) 'error))))
 
 (defun selected-runtime-inline-sources ()
-  "((symbol . source) ...): the small functions of COMMON-LISP, and the small
-functions of the runtime that their sources call (so that a copy of
-NUMERATOR has a copy of %CHECK-INTEGER, whose type then flows), transitively."
+  "((symbol . source) ...): the small functions of COMMON-LISP (and
+*RUNTIME-INLINE-ALSO*), and the small functions of the runtime that their
+sources call (so that a copy of NUMERATOR has a copy of %CHECK-INTEGER,
+whose type then flows), transitively; not those that only signal an error
+(NORETURN-SOURCE-P)."
   (let ((selected (make-hash-table :test 'eq)) (queue nil))
     (maphash (lambda (k v)
-               (when (and v (eq (symbol-package k) (find-package :common-lisp)))
+               (when (and v (or (eq (symbol-package k) (find-package :common-lisp))
+                                (member k *runtime-inline-also*)))
                  (setf (gethash k selected) v) (push v queue)))
              *runtime-inline-sources*)
     (labels ((walk (x)
@@ -651,7 +667,8 @@ NUMERATOR has a copy of %CHECK-INTEGER, whose type then flows), transitively."
                  (let ((op (car x)))
                    (when (and (symbolp op) (not (gethash op selected)))
                      (let ((v (gethash op *runtime-inline-sources*)))
-                       (when v (setf (gethash op selected) v) (push v queue)))))
+                       (when (and v (not (noreturn-source-p v)))
+                         (setf (gethash op selected) v) (push v queue)))))
                  (loop while (consp x) do (walk (car x)) (setq x (cdr x))))))
       (loop while queue do (walk (cddr (pop queue)))))
     (loop for k being the hash-keys of selected using (hash-value v) collect (cons k v))))

@@ -756,6 +756,13 @@ conses (a literal may be circular)."
 (defun tree-mentions-p (x sym)
   (if (consp x) (or (tree-mentions-p (car x) sym) (tree-mentions-p (cdr x) sym)) (eq x sym)))
 
+(defun tree-calls-p (x sym)
+  "X mentions SYM other than in a quoted object ((FIND-CLASS 'VEC3) in the
+constructor VEC3 is no call of it)."
+  (cond ((atom x) (eq x sym))
+        ((and (eq (car x) 'quote) (consp (cdr x)) (null (cddr x))) nil)
+        (t (or (tree-calls-p (car x) sym) (tree-calls-p (cdr x) sym)))))
+
 (defun uses-redefinable-macros-p (x)
   "X mentions a macro or a global symbol macro that is not COMMON-LISP's: a
 copy of X made later could expand it differently than the function did."
@@ -780,7 +787,7 @@ when it may be copied into callers compiled later, else NIL."
                  (<= (form-size body *live-inline-max-size*) *live-inline-max-size*)
                  (notany (lambda (x) (member x '(&environment &whole))) ll)
                  ;; (not recursive; a RETURN-FROM of its block is copied with the block)
-                 (not (tree-mentions-p (strip-return-froms (cons ll body) sym) sym))
+                 (not (tree-calls-p (strip-return-froms (cons ll body) sym) sym))
                  (not (uses-redefinable-macros-p (cons ll body)))
                  ;; a loop stays in its own function (which the engine optimizes when it is called again)
                  (notany (lambda (op) (tree-mentions-p body op)) *loop-operators*)
