@@ -306,10 +306,10 @@ the default value of its type (and no declaration when there is none)."
                (%loop-bind-pattern s var)
                (when other (%loop-bind-pattern s other))
                (%loop-end-test s `(%fx< ,i 0))
-               (dolist (f (%loop-destructure-setq var (if keysp `(%ht-key-ref ,keys ,i) `(%ht-value-ref ,vals ,i))))
+               (dolist (f (%loop-destructure-setq var (if keysp `(%svref ,keys ,i) `(%svref ,vals ,i))))
                  (%loop-pre s f))
                (when other
-                 (dolist (f (%loop-destructure-setq other (if keysp `(%ht-value-ref ,vals ,i) `(%ht-key-ref ,keys ,i))))
+                 (dolist (f (%loop-destructure-setq other (if keysp `(%svref ,vals ,i) `(%svref ,keys ,i))))
                    (%loop-pre s f)))
                (%loop-step s `(setq ,i (%ht-scan ,keys ,fill ,del (%fx+ ,i 1)))))))
           ((%lkw-in what '("SYMBOL" "SYMBOLS" "PRESENT-SYMBOL" "PRESENT-SYMBOLS"

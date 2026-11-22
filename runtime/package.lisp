@@ -195,7 +195,7 @@
   (if (eql (%ht h +ht-count+) 0)
       (values nil nil)
       (let ((i (%ht-region-index h d hash 0 n)))
-        (cond ((%fx>= i 0) (values (%ht-value-ref (%ht h +ht-keys+) i) t))
+        (cond ((%fx>= i 0) (values (%svref (%ht h +ht-vals+) i) t))
               ((eql i -2) (values nil :unknown))
               (t (values nil nil))))))
 
