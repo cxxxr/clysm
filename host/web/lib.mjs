@@ -89,6 +89,11 @@ export function loadSync(source, options = {}) {
   };
 }
 
+// The module of base64 TEXT (an eager embedded library's module compiles it once).
+export function moduleOfBase64(text) {
+  return new WebAssembly.Module(bytesOfBase64(text));
+}
+
 // The bytes of a module written as base64 (what the modules of an embedded library hold).
 export function bytesOfBase64(text) {
   const binary = atob(text);
