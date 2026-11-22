@@ -183,7 +183,10 @@ that UPGRADED-ARRAY-ELEMENT-TYPE makes it T."
                                                    ,@(loop repeat n collect '(:eqref t)))))))
     (:envclov   (:sub (:closure) t (:struct (((:ref :code) nil) (:eqref t) ((:ref :vector) nil)))))
     (:cell      (:struct ((:eqref t))))
-    (:bignum    (:struct ((:i32 nil) ((:ref :null :limbs) t) (:i64 nil))))  ; sign limbs value (limbs null: |value| < 2^63 in VALUE)
+    ;; an integer that is not a fixnum: within 64 bits the box of its value
+    ;; ($ibox), beyond them a bignum of sign and limbs
+    (:ibox      (:struct ((:i64 nil))))
+    (:bignum    (:struct ((:i32 nil) ((:ref :null :limbs) nil))))
     (:ratio     (:struct ((:eqref nil) (:eqref nil))))
     (:single    (:struct ((:f32 nil))))
     (:double    (:struct ((:f64 nil))))
@@ -275,6 +278,8 @@ that UPGRADED-ARRAY-ELEMENT-TYPE makes it T."
     (:ll-l      (:func (:i64 :i64) (:i64)))
     (:eli-e     (:func (:eqref :i64 :i32) (:eqref)))
     ;; the steps of integer accumulators (:acc-add64, :acc-add)
+    (:e-m       (:func (:eqref) ((:ref :null :limbs))))
+    (:iml-e     (:func (:i32 (:ref :null :limbs) :i64) (:eqref)))
     (:ele-l     (:func (:eqref :i64 :eqref) (:i64)))
     (:ele-e     (:func (:eqref :i64 :eqref) (:eqref)))
     (:eeeee-e   (:func (:eqref :eqref :eqref :eqref :eqref) (:eqref)))

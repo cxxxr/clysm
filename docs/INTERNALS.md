@@ -83,12 +83,14 @@ The universal value type is `(ref null eq)`.
   among the objects it makes empty). Its initializer had an `i32.const` a
   character: the module of one export 4,214,514 → 4,163,772 bytes (gzip
   973,724 → 971,312), the REPL image 9,355,652 → 9,285,446.
-* **bignum** — `struct { sign: i32, digits: mut (ref null (array i32)), value: i64 }`
+* **bignum** — `struct { sign: i32, digits: (ref null (array i32)) }`
   (base 2^32 digits, unsigned in the i32 elements; the kernels compute in
   i64, and Lisp code never reads a digit, as most are not fixnums). Integers
-  beyond the fixnum range that fit in 64 bits are computed with i64
-  arithmetic and made without digits (the `value` field holds them); the
-  digits are made when the general bignum code asks for them.
+  beyond the fixnum range that fit in 64 bits are an **ibox**, `struct {
+  value: i64 }` (24 octets), computed with i64 arithmetic; their digits are
+  made when the general bignum code asks for them. (Until 2026-11-23 one
+  struct of three fields held both: see "The box of an integer within 64
+  bits" under Performance.)
   **ratio**, **complex**, **single-float** (`f32`), **double-float** (`f64`) structs.
 * **package** — `$package` struct with hash tables of symbols.
 * **instances** (structures, conditions, CLOS objects) — `struct { layout, slots, hash: mut i32 }`
@@ -3955,6 +3957,32 @@ What makes the code fast:
   a sum by its exponent, as a product is, instead of by the subtraction,
   was no better (the same file 1.01, `h-matmul-double` 1.06): the root
   keeps the test of its own operation.
+* **The box of an integer within 64 bits is 24 octets** (2026-11-23;
+  `$ibox` in `src/layout.lisp`). An integer between 2^29 and 2^63 was a
+  `$bignum` (sign, limbs, value) with null limbs: 40 octets, and limbs
+  made in it when the general bignum code asked. It is now a struct of
+  its i64 alone, and a `$bignum` is a sign and limbs (32 octets, 40
+  before). The two are separate final types, not a type and its
+  subtype: with `$bignum` a subtype of the box (the first version) the
+  test of "an integer that is not a fixnum" was a `ref.test` of a type
+  that is not final, which V8 answers for a bignum by walking its
+  supertypes, and the bignum kernels were 3% slower in geometric mean
+  (the Fibonacci sums and the products by a fixnum 1.07, `a-sum-overflow`
+  1.08–1.2 with the accessors as helpers that V8 did not copy into
+  `:big-add`); as two final types every test is one comparison of the
+  map, "a box" needs no test of a value that is not 0 after it, and the
+  17 probes of bignum operations are 0.996 of their time before
+  (`a-sum-overflow` 1.02). The helpers that took the value, the limbs or
+  the sign of either through one type (`:box-value`, `:big-limbs`,
+  `:big-sign`, `:int-box-p`) stand where the code is not hot; the
+  decoding of operands (`num-decode-code`), `eql`, `evenp`, `:wide-i64`,
+  `:int-i64`, the sum of two bignums and the rationals test the type they
+  want. Limbs for the value of a box are made at each call that wants
+  them (`:bignum-limbs`: a box in the general bignum code, a product of
+  a box and a bignum); a heap image keeps its form (sign, limbs, value),
+  read into either type (`:make-big`). A list of 300 000 squares made
+  and summed (`f-sq-list` of the probes): 109 -> 61 ms; `f-generators`
+  0.93.
 * **Numeric items still behind SBCL, and why** (2026-11-23; each profiled
   by instruction: `node --prof --prof-sampling-interval=100 --perf-prof`,
   the ticks placed on the code read from the jitdump with `objdump`, and
