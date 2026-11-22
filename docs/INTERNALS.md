@@ -2710,17 +2710,24 @@ Limitations:
 
 Time relative to SBCL 2.6 on Node.js 24 (x86-64), measured by `tools/bench.sh
 FILE` (best of three runs per benchmark; whole programs compiled ahead of
-time unless noted):
+time unless noted). Measured again on 2026-11-23 (SBCL 2.6.0, Node.js
+24.22, one run of each file one after the other, every result the same on
+both sides); the column "Before" is the table as it was, measured at
+various times up to 2026-11-21, before most of the work of 2026-11-21 and
+22 (structure-typed variables, raw clones, the base case copied into
+recursive calls, sequence functions looping at the call site).
+`bench/libs.lisp` was not run again.
 
-| File | Programs | Geometric mean | Slowest | Fastest |
-|---|---|---|---|---|
-| `bench/suite.lisp` | 24, used for tuning | 0.94 | `b-bignum` 1.91 | `b-mandel` 0.08 |
-| `bench/gabriel.lisp` | 10 Gabriel benchmarks, used for tuning | 1.01 | `g-traverse` 1.54 | `g-ctak` 0.71 |
-| `bench/holdout.lisp` | 17 ordinary programs written after the first two files | 1.06 | `h-clos-methods` 1.68 | `h-mandel-complex` 0.08 |
-| `bench/libs.lisp` (`tools/bench-libs.sh`) | cl-ppcre, Alexandria (its test suite and utilities), split-sequence, Babel from Quicklisp; the self-hosted compiler compiling `bench/suite.lisp` | 1.2 | `l-babel` 2.2 (`l-ppcre-replace` 1.5) | `l-alexandria-tests` 0.2–0.5 |
-| `bench/programs.lisp` | 63 more programs | 1.19 | `p-builtin-dispatch` 3.15 | `p-remove-duplicates` 0.03 |
-| `bench/arith.lisp` | 13 probes of arithmetic in undeclared code (numbers in slots, lists, vectors, hash tables) | 0.56 (0.58 before the integers beyond the fixnums stayed in i64 in more places, 2026-11) | `a-sum-overflow` 2.33 (bignums beyond 2^63) | `a-simpson` 0.10 |
-| `bench/declared.lisp` | 19 programs with full declarations at `(speed 3) (safety 0)` (see below) | 1.24 (1.56 before `safety` was read) | `d-particles` 3.0, `d-nbody` 2.3 | `d-k-nucleotide` 0.79 |
+| File | Programs | Geometric mean | Before | Slowest | Fastest |
+|---|---|---|---|---|---|
+| `bench/suite.lisp` | 24, used for tuning | 0.76 | 0.94 | `b-deriv` 1.44 (`b-bignum` 1.38, was 1.91) | `b-mandel` 0.08 |
+| `bench/gabriel.lisp` | 10 Gabriel benchmarks, used for tuning | 0.96 | 1.01 | `g-traverse` 1.48 | `g-fft` 0.38 (`g-ctak` 0.59) |
+| `bench/holdout.lisp` | 17 ordinary programs written after the first two files | 0.78 | 1.06 | `h-fib-generic` 1.46 (`h-clos-methods` 1.02, was 1.68) | `h-mandel-complex` 0.09 |
+| `bench/libs.lisp` (`tools/bench-libs.sh`) | cl-ppcre, Alexandria (its test suite and utilities), split-sequence, Babel from Quicklisp; the self-hosted compiler compiling `bench/suite.lisp` | — | 1.2 | `l-babel` 2.2 (`l-ppcre-replace` 1.5) | `l-alexandria-tests` 0.2–0.5 |
+| `bench/programs.lisp` | 63 more programs | 0.84 | 1.19 | `p-builtin-dispatch` 2.61 (`p-bignum-misc` 1.66) | `p-remove-duplicates` 0.03 |
+| `bench/arith.lisp` | 13 probes of arithmetic in undeclared code (numbers in slots, lists, vectors, hash tables) | 0.53 | 0.56 | `a-hash-counts` 1.42 (`a-sum-overflow`, bignums beyond 2^63, was 2.33) | `a-simpson` 0.10 |
+| `bench/vectors.lisp` | 13 probes of algorithmic code over simple vectors without declarations | 0.51 | 0.43 | `x-fannkuch` 1.09 | `x-list-to-vector` 0.06 |
+| `bench/declared.lisp` | 19 programs with full declarations at `(speed 3) (safety 0)` (see below) | 0.94 | 1.24 (1.56 before `safety` was read) | `d-triangle` 1.41, `d-particles` 1.35 | `d-tak` 0.37, `d-matmul` 0.54 |
 
 Code loaded form by form into the image (`clysm script`, the REPL, `load`)
 against the same file compiled as a whole program (`MODE=script tools/bench.sh
@@ -4735,30 +4742,32 @@ string, an `eql` table of fixnums, a quicksort over `(simple-array fixnum
 (*))` and CRC-32. A `fixnum` declaration is only made where the value fits
 in 30 bits (Clysm's fixnums), as portable code must.
 
-`tools/bench.sh bench/declared.lisp` (2026-11-21, best of three, one slot):
+`tools/bench.sh bench/declared.lisp` (2026-11-23, best of three; the last
+column is the ratio on 2026-11-21, when the file was added and Clysm read
+no `safety`):
 
-| Program | SBCL ms | Clysm ms | Ratio |
-|---|---|---|---|
-| `d-nbody` | 208 | 732 | 3.52 |
-| `d-particles` | 136 | 480 | 3.53 |
-| `d-spectral-norm` | 137 | 393 | 2.87 |
-| `d-matmul` | 108 | 297 | 2.75 |
-| `d-triangle` | 140 | 351 | 2.51 |
-| `d-fannkuch` | 142 | 334 | 2.35 |
-| `d-tak` | 195 | 422 | 2.16 |
-| `d-crc32` | 145 | 254 | 1.75 |
-| `d-mandelbrot` | 165 | 221 | 1.34 |
-| `d-fixnum-hash` | 175 | 223 | 1.27 |
-| `d-pidigits` | 190 | 229 | 1.21 |
-| `d-quicksort` | 165 | 193 | 1.17 |
-| `d-fasta` | 123 | 137 | 1.11 |
-| `d-tokenize` | 160 | 176 | 1.10 |
-| `d-binary-trees` | 184 | 197 | 1.07 |
-| `d-revcomp` | 115 | 117 | 1.02 |
-| `d-sieve` | 124 | 110 | 0.89 |
-| `d-k-nucleotide` | 110 | 93 | 0.85 |
-| `d-fft` | 103 | 86 | 0.83 |
-| geometric mean | | | 1.56 |
+| Program | SBCL ms | Clysm ms | Ratio | 2026-11-21 |
+|---|---|---|---|---|
+| `d-triangle` | 131 | 185 | 1.41 | 2.51 |
+| `d-particles` | 143 | 193 | 1.35 | 3.53 |
+| `d-pidigits` | 191 | 237 | 1.24 | 1.21 |
+| `d-fasta` | 129 | 142 | 1.10 | 1.11 |
+| `d-binary-trees` | 179 | 197 | 1.10 | 1.07 |
+| `d-quicksort` | 175 | 189 | 1.08 | 1.17 |
+| `d-nbody` | 211 | 224 | 1.06 | 3.52 |
+| `d-revcomp` | 119 | 123 | 1.03 | 1.02 |
+| `d-crc32` | 149 | 150 | 1.01 | 1.75 |
+| `d-spectral-norm` | 140 | 137 | 0.98 | 2.87 |
+| `d-mandelbrot` | 179 | 176 | 0.98 | 1.34 |
+| `d-fft` | 102 | 100 | 0.98 | 0.83 |
+| `d-sieve` | 124 | 117 | 0.94 | 0.89 |
+| `d-fannkuch` | 145 | 135 | 0.93 | 2.35 |
+| `d-tokenize` | 163 | 146 | 0.90 | 1.10 |
+| `d-fixnum-hash` | 176 | 147 | 0.84 | 1.27 |
+| `d-k-nucleotide` | 105 | 71 | 0.68 | 0.85 |
+| `d-matmul` | 142 | 76 | 0.54 | 2.75 |
+| `d-tak` | 206 | 76 | 0.37 | 2.16 |
+| geometric mean | | | 0.94 | 1.56 |
 
 After items 1, 3 and 5 below (structure accessors, integer checks, array
 headers): 1.48 against 1.57 for the code before, run by run on one slot;
@@ -4793,8 +4802,9 @@ Without declarations the policy gains SBCL little (2–11% in geometric
 mean): it removes type and bounds checks but cannot remove generic
 arithmetic. The items that gain most: `g-takl` (SBCL 51 → 26 ms),
 `v-search-mismatch` (48 → 28), `g-browse` (139 → 97), `h-matmul-double`
-(90 → 63), `p-coerce` (47 → 33), `p-double-2d` (36 → 26). Declared code is
-where Clysm is behind: 1.56 against about 0.9–1.1 on undeclared code.
+(90 → 63), `p-coerce` (47 → 33), `p-double-2d` (36 → 26). Declared code was
+where Clysm was behind: 1.56 against about 0.9–1.1 on undeclared code on
+2026-11-21, 0.94 on 2026-11-23.
 Until 2026-11-21 Clysm read no `optimize` quality but `debug` and `speed`
 (for the frame records of the debugger), and `safety 0` changed nothing in
 its code; see "What `(safety 0)` does" below for what it does now.
