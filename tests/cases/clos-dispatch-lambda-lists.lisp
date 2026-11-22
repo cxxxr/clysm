@@ -1,0 +1,103 @@
+;;; Generic functions with &OPTIONAL, &REST and &KEY parameters whose methods
+;;; the compiler sees (dispatch compiled as code: the discriminating function
+;;; takes the spread arguments), called often enough for the trees to be used.
+
+(defclass base () ((a :initform 1 :accessor a-of)))
+(defclass mid (base) ((c :initform 0 :accessor c-of)))
+(defclass top (mid) ())
+(defclass other () ())
+
+(defmacro attempt (form) `(handler-case ,form (error () :error)))
+(defmacro many (form) `(let ((r nil)) (dotimes (i 12 r) (setq r ,form))))
+
+;; &optional
+(defgeneric render (x &optional indent))
+(defmethod render ((x base) &optional (indent 0)) (+ indent (a-of x)))
+(defmethod render ((x mid) &optional (indent 0 indent-p)) (list indent-p (+ 1 indent (call-next-method))))
+(defmethod render ((x integer) &optional indent) (list :integer x indent))
+(defmethod render ((x (eql :k)) &optional (indent :none)) (list :k indent))
+(defun render-all (objs)
+  (mapcar (lambda (o) (list (render o) (render o 2))) objs))
+(print (many (render-all (list (make-instance 'top) (make-instance 'mid) (make-instance 'base) 5 :k))))
+(print (many (attempt (render (make-instance 'other)))))
+(print (many (attempt (render "string" 1))))
+(print (many (attempt (funcall 'render (make-instance 'base) 1 2))))
+
+;; CALL-NEXT-METHOD with other arguments
+(defgeneric scale (x &optional factor))
+(defmethod scale ((x number) &optional (factor 2)) (* x factor))
+(defmethod scale ((x integer) &optional (factor 3)) (list :int (call-next-method x (+ factor 1))))
+(defmethod scale ((x fixnum) &optional factor) (list :fix factor (call-next-method)))
+(print (many (list (scale 1.5) (scale 1.5 4) (scale 2) (scale 2 10) (scale (expt 10 30)) (scale (expt 10 30) 2))))
+
+;; &key: the keywords of the applicable methods are the valid ones
+(defgeneric configure (x &key size))
+(defmethod configure ((x base) &key (size 1) color) (if color (+ size 1) size))
+(defmethod configure :before ((x mid) &key size depth) (when size (setf (c-of x) (list size depth))))
+(defmethod configure ((x other) &key size color &allow-other-keys) (list :other size color))
+(defvar *b* (make-instance 'base))
+(defvar *m* (make-instance 'mid))
+(defvar *o* (make-instance 'other))
+(print (many (list (configure *b*) (configure *b* :size 3) (configure *b* :color t :size 2)
+                   (configure *m* :size 4 :depth 2) (c-of *m*)
+                   (configure *o* :anything 1 :size 2))))
+(print (many (attempt (configure *b* :depth 1))))
+(print (many (attempt (configure *b* :depth 1 :allow-other-keys t))))
+(print (many (attempt (configure *b* :size))))
+(print (many (attempt (configure *b* 1 2))))
+(print (many (attempt (configure *m* :bogus 1))))
+(let ((k :size)) (print (many (configure *b* k 7))))
+(let ((k :depth)) (print (many (attempt (configure *b* k 7)))))
+(print (many (configure *b* :size 1 :size 2)))
+
+;; &rest, &rest with &key
+(defgeneric gather (x &rest things))
+(defmethod gather ((x base) &rest things) (length things))
+(defmethod gather ((x top) &rest things) (+ (car things) (call-next-method)))
+(defmethod gather ((x symbol) &rest things &key (weight 1)) (list x weight things))
+(print (many (list (gather *b*) (gather *b* 1 2 3) (gather (make-instance 'top) 10 2 3 4)
+                   (gather 'sym) (gather 'sym :weight 3) (gather nil :weight 4))))
+(print (many (attempt (gather 'sym :height 3))))
+(print (many (attempt (gather *b* :height 3))))
+(print (many (attempt (gather "s"))))
+
+;; two required parameters, an optional one and keys; :around and :after
+(defvar *trace* nil)
+(defgeneric combine (a b &optional c &key scale))
+(defmethod combine ((a integer) (b integer) &optional (c 0) &key (scale 1)) (* scale (+ a b c)))
+(defmethod combine ((a integer) (b string) &optional (c :none) &key scale) (list a b c scale))
+(defmethod combine :around ((a fixnum) b &optional c &key (scale 1 scale-p))
+  (declare (ignore c scale))
+  (if scale-p (list :around (call-next-method)) (call-next-method)))
+(defmethod combine :after ((a integer) (b integer) &optional c &key &allow-other-keys) (push (list a b c) *trace*))
+(print (many (list (combine 1 2) (combine 1 2 3) (combine 1 2 3 :scale 2) (combine 1 "s") (combine 1 "s" 2 :scale 3)
+                   (combine (expt 10 20) 1 1 :scale 2))))
+(print (length *trace*))
+(print (many (attempt (combine 1 2 3 :scal 2))))
+(print (many (attempt (combine 1 2 3 4))))
+(print (many (attempt (combine 1))))
+
+;; a method added after the calls were compiled and the tree used; a class defined later
+(defun call-render (x) (render x 10))
+(print (many (call-render *b*)))
+(defmethod render ((x other) &optional (indent 0)) (list :other indent))
+(print (many (list (call-render *o*) (call-render *b*))))
+(defclass sub (base) ())
+(defmethod render :around ((x sub) &optional indent) (list :sub indent (call-next-method)))
+(print (many (list (call-render (make-instance 'sub)) (call-render *m*))))
+(defgeneric configure (x &key size &allow-other-keys))
+(print (many (attempt (configure *b* :depth 1 :whatever 2))))
+
+;; functions (a generic function is not a plain one), strings, anything else
+(defgeneric probe (thing target &key start end))
+(defmethod probe ((thing string) target &key (start 0) end) (list :string thing target start end))
+(defmethod probe ((thing function) target &key (start 0) end) (list :function (funcall thing target) start end))
+(defmethod probe ((thing t) target &key start end) (list :other target start end))
+(defgeneric plain-probe (thing))
+(defmethod plain-probe ((thing function)) :function)
+(defmethod plain-probe ((thing generic-function)) (list :generic (call-next-method)))
+(defmethod plain-probe ((thing t)) :other)
+(print (many (list (probe "re" 1) (probe #'1+ 1 :start 2) (probe (lambda (x) (* x 2)) 4 :end 3 :start 1)
+                   (probe #'plain-probe 1) (probe 'sym 1 :end 2) (probe (make-array 2 :element-type '(unsigned-byte 8)) 3)
+                   (plain-probe #'car) (plain-probe #'plain-probe) (plain-probe (lambda () 1)) (plain-probe 1))))
+(print (many (attempt (probe #'1+ 1 :stat 2))))
