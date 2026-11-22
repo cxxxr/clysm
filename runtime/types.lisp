@@ -57,21 +57,23 @@
 ;;; fill pointer, the key of a JSON object looked up in an EQUAL table):
 ;;; compared over their storage in Wasm when that is a simple string.
 (defun %string-equal-regions (a b)
-  (let ((n (length a)))
-    (and (eql n (length b))
-         (let ((da (%array-storage a)) (db (%array-storage b)))
-           (if (and (%simple-string-p da) (%simple-string-p db))
-               (%string-region= da (%array-total-offset a) db (%array-total-offset b) n)
-               (string= a b))))))
+  (let ((r (%string-eq-fast a b 0 nil 0 nil nil)))
+    (cond ((eq r 1) t)
+          ((eq r 0) nil)
+          (t (string= a b)))))
 
 (defun %equalp-strings (a b)
-  ;; two simple strings
-  (let ((n (%string-length a)))
-    (declare (fixnum n))
-    (and (eql n (%string-length b))
-         (dotimes (i n t)
-           (let ((x (%schar a i)) (y (%schar b i)))
-             (unless (%char-ci-eq x y) (return nil)))))))
+  ;; two simple strings: by the loop over the codes of STRING-EQUAL, which
+  ;; leaves a difference of characters beyond ASCII to this one
+  (let ((r (%string-eq-fast a b 0 nil 0 nil t)))
+    (cond ((eq r 1) t)
+          ((eq r 0) nil)
+          (t (let ((n (%string-length a)))
+               (declare (fixnum n))
+               (and (eql n (%string-length b))
+                    (dotimes (i n t)
+                      (let ((x (%schar a i)) (y (%schar b i)))
+                        (unless (%char-ci-eq x y) (return nil))))))))))
 
 (defun %equalp-vector-region (da oa db ob n)
   ;; N elements of the simple storages DA (from OA) and DB (from OB)
@@ -198,13 +200,7 @@
            (setq a (cdr a) b (cdr b)))
           ((%simple-string-p a)
            (return
-             (cond ((%simple-string-p b)
-                    (let ((n (%string-length a)))
-                      (declare (fixnum n))
-                      (and (eql n (%string-length b))
-                           (dotimes (i n t)
-                             (let ((x (%schar a i)) (y (%schar b i)))
-                               (unless (%char-ci-eq x y) (return nil)))))))
+             (cond ((%simple-string-p b) (%equalp-strings a b))
                    ((arrayp b) (%equalp-arrays a b))
                    (t nil))))
           ((%i31p a)

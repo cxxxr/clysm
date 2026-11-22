@@ -35,8 +35,10 @@
 ;;; forgotten whenever *PACKAGE-TABLE* changes.
 (defvar *%find-package-last-name* nil)
 (defvar *%find-package-last* nil)
+(defvar *%package-epoch* 0)             ; counts the changes of the names of packages
 (defmacro %package-table-changed ()
-  `(setq *%find-package-last-name* nil *%find-package-last* nil))
+  `(setq *%find-package-last-name* nil *%find-package-last* nil
+         *%package-epoch* (%fx+ *%package-epoch* 1)))
 
 (defun find-package (name)
   (cond ((%packagep name) name)
@@ -52,6 +54,42 @@
            (or (and *package-local-nicknames* *package*
                     (cdr (assoc s (gethash *package* *package-local-nicknames*) :test #'string=)))
                (values (gethash s *package-table*)))))))
+
+;;; A package named by a constant (FIND-PACKAGE, and the package argument of
+;;; FIND-SYMBOL and INTERN, of a string, a keyword or a quoted symbol) is
+;;; remembered where the call is written, in a cons (epoch . package) made
+;;; at load time: found again without hashing the name while no package was
+;;; made, renamed or deleted since (*%PACKAGE-EPOCH*) and no package has
+;;; local nicknames (the name then depends on *PACKAGE*).
+(defun %find-package-cached (name cell)
+  (if (and (eq (car cell) *%package-epoch*) (null *package-local-nicknames*))
+      (cdr cell)
+      (let ((p (find-package name)))
+        (when (and p (null *package-local-nicknames*))
+          (setf (cdr cell) p (car cell) *%package-epoch*))
+        p)))
+(defun %package-cached (name cell)
+  "The package named NAME, else NAME (for the function called with it to signal the error)."
+  (if (and (eq (car cell) *%package-epoch*) (null *package-local-nicknames*))
+      (cdr cell)
+      (or (%find-package-cached name cell) name)))
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun %constant-package-name-p (form)
+    (or (stringp form) (keywordp form)
+        (and (consp form) (eq (car form) 'quote) (consp (cdr form)) (null (cddr form))
+             (symbolp (cadr form)) (cadr form) t))))
+(define-compiler-macro find-package (&whole form &rest args)
+  (if (and (consp args) (null (cdr args)) (%constant-package-name-p (car args)))
+      `(%find-package-cached ,(car args) (load-time-value (cons nil nil)))
+      form))
+(define-compiler-macro find-symbol (&whole form &rest args)
+  (if (and (consp args) (consp (cdr args)) (null (cddr args)) (%constant-package-name-p (cadr args)))
+      `(find-symbol ,(car args) (%package-cached ,(cadr args) (load-time-value (cons nil nil))))
+      form))
+(define-compiler-macro intern (&whole form &rest args)
+  (if (and (consp args) (consp (cdr args)) (null (cddr args)) (%constant-package-name-p (cadr args)))
+      `(intern ,(car args) (%package-cached ,(cadr args) (load-time-value (cons nil nil))))
+      form))
 
 ;;; package-local nicknames (as in SBCL, CCL, ECL...)
 (defun package-local-nicknames (package)

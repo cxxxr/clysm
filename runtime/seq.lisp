@@ -304,7 +304,10 @@
 
 (defun %array-storage (a)
   ;; the innermost simple storage of an array
-  (if (%mdarray-p a) (%array-storage (%mdarray-data a)) a))
+  ;; (a header right over its storage, the usual case, without a second call)
+  (if (%mdarray-p a)
+      (let ((d (%mdarray-data a))) (if (%mdarray-p d) (%array-storage d) d))
+      a))
 
 (defun %check-array (a) (unless (arrayp a) (%type-error a 'array)) a)
 
@@ -1018,6 +1021,25 @@
   (let ((v (%make-simple-vector (- end start) nil)) (l (nthcdr start list)))
     (dotimes (i (- end start) v) (%set-svref v i (car l)) (setq l (cdr l)))))
 
+;;; A list region read backwards (%DO-REGION): %LIST-CHUNKS copies its
+;;; elements in one walk into simple vectors of 64, and gives (END . the
+;;; vectors, the last one first); END, when NIL, is where the list ends.  (The
+;;; length found first and the region copied to one vector were three walks
+;;; of the list, 2 ns an element each when it is not in the cache.)
+(defun %list-chunks (list start end)
+  (let ((r nil) (l (%list-tail list start)) (i start) (v nil) (k 64) (mark nil) (limit 2) (steps 0))
+    (declare (fixnum i k limit steps))
+    (loop
+      (when (if end (%fx>= i end) (%endp l)) (return (cons i r)))
+      (when (%fx= k 64)
+        ;; (a circular list: as LIST-LENGTH finds it)
+        (when (eq l mark) (%type-error list '(and list (satisfies list-length))))
+        (setq steps (%fx+ steps 1))
+        (when (%fx= steps limit) (setq mark l limit (%fx* limit 2)))
+        (setq v (%make-simple-vector 64 nil) r (cons v r) k 0))
+      (%set-svref v k (car l))
+      (setq l (cdr l) k (%fx+ k 1) i (%fx+ i 1)))))
+
 (defun %list-tail (list n)
   "The tail of LIST after N elements, which must be there."
   (do ((l list (cdr l)) (i n (- i 1))) ((<= i 0) l)
@@ -1025,10 +1047,12 @@
 
 (defun %region-end (seq start end from-end)
   "Validates the bounding indices of SEQ as %CHECK-BOUNDS does and returns the
-effective end -- except for a list read forwards to its end, whose length is
-not needed: then only START is checked and the result is NIL (%DO-REGION
-stops at the end of the list, and signals an error when START is beyond it)."
-  (cond ((and (listp seq) (null end) (not from-end))
+effective end -- except for a list read to its end, whose length is not
+needed: then only START is checked and the result is NIL (%DO-REGION stops
+at, or starts from, the end of the list, and signals an error when START is
+beyond it)."
+  (declare (ignore from-end))
+  (cond ((and (listp seq) (null end))
          (unless (and (fixnump start) (>= start 0)) (%type-error start '(integer 0 *)))
          nil)
         (t (%check-bounds start end (%seq-length seq)))))
@@ -1037,7 +1061,10 @@ stops at the end of the list, and signals an error when START is beyond it)."
 ;;; and the total displacement are found once (%ARRAY-STORAGE,
 ;;; %ARRAY-TOTAL-OFFSET), and each element is then read from the storage.
 (defun %array-total-offset (a)
-  (if (%mdarray-p a) (+ (%mdarray-offset a) (%array-total-offset (%mdarray-data a))) 0))
+  (if (%mdarray-p a)
+      (let ((d (%mdarray-data a)))
+        (if (%mdarray-p d) (+ (%mdarray-offset a) (%array-total-offset d)) (%mdarray-offset a)))
+      0))
 
 (defmacro %vref (data i)
   "Element I of the simple storage DATA (no bounds check)."
@@ -1059,15 +1086,16 @@ stops at the end of the list, and signals an error when START is beyond it)."
   "Iterates over the elements of SEQ in [START, END), backwards when FROM-END.
 IDX is bound to the index of each element.  (RETURN x) exits.  START and END
 must be the checked bounds (%CHECK-BOUNDS, or %REGION-END, whose NIL stands
-for the end of a list).  A list region read backwards is copied to a vector."
+for the end of a list).  A list region is read backwards in blocks."
   (let ((s (gensym)) (l (gensym)) (e (gensym)) (eo (gensym)) (st (gensym)) (k (gensym)) (fe (gensym))
-        (d (gensym)) (off (gensym)) (i (gensym)) (lim (gensym)))
+        (d (gensym)) (off (gensym)) (i (gensym)) (lim (gensym))
+        (blocks (gensym)) (hi (gensym)) (lo (gensym))
+        (tblock (gensym)) (tnext (gensym)) (tend (gensym)) (tdone (gensym)))
     `(let* ((,s ,seq) (,st ,start) (,eo ,end) (,e (if ,eo ,eo 0)) (,fe ,from-end)
             (,d (cond ((not (listp ,s)) (%array-storage ,s))
-                      (,fe (%list-region-vector ,s ,st ,e))
+                      (,fe t)           ; (the chunk being read, below)
                       (t nil)))
             (,off (cond ((not (listp ,s)) (%array-total-offset ,s))
-                        (,fe (- ,st))
                         (t 0))))
        (declare (fixnum ,st ,e ,off))
        (block nil
@@ -1083,11 +1111,30 @@ for the end of a list).  A list region read backwards is copied to a vector."
                 (let ((,var (car ,l))) ,@body)
                 (setq ,idx (+ ,idx 1)))))
            (,fe
-            (do ((,i (+ (- ,e 1) ,off) (- ,i 1)) (,lim (+ ,st ,off))) ((< ,i ,lim))
-              (declare (fixnum ,i ,lim))
-              (let ((,idx (- ,i ,off)) (,var (%vref ,d ,i)))
-                (declare (ignorable ,idx))
-                ,@body)))
+            ;; a vector: its region, last element first; a list: chunk by
+            ;; chunk (see %LIST-CHUNKS)
+            (let* ((,blocks (if (listp ,s)
+                                (let ((,lim (%list-chunks ,s ,st ,eo))) (setq ,e (car ,lim)) (cdr ,lim))
+                                nil))
+                   (,hi ,e) (,lo ,st) (,i 0) (,lim 0))
+              (declare (fixnum ,hi ,lo ,i ,lim))
+              (tagbody
+               ,tblock
+                 (when (listp ,s)
+                   (when (null ,blocks) (go ,tdone))
+                   (setq ,lo (%fx- ,hi (if (%fx= ,hi ,e) (%fx+ (rem (%fx- (%fx- ,e ,st) 1) 64) 1) 64)))
+                   (setq ,d (car ,blocks) ,off (%fx- 0 ,lo) ,blocks (cdr ,blocks)))
+                 (setq ,i (+ (- ,hi 1) ,off) ,lim (+ ,lo ,off))
+               ,tnext
+                 (when (< ,i ,lim) (go ,tend))
+                 (let ((,idx (- ,i ,off)) (,var (%vref ,d ,i)))
+                   (declare (ignorable ,idx))
+                   ,@body)
+                 (setq ,i (- ,i 1))
+                 (go ,tnext)
+               ,tend
+                 (when (and (listp ,s) ,blocks) (setq ,hi ,lo) (go ,tblock))
+               ,tdone)))
            ;; (forwards: a loop for each usual kind of storage, whose
            ;; elements are read directly)
            ((%simple-string-p ,d)
@@ -1394,7 +1441,11 @@ with TYPEP), a class by its superclasses."
          (let* ((n (length seq)) (v (%vector-like seq n))
                 (d (%array-storage seq)) (last (+ (%array-total-offset seq) n -1)))
            (declare (fixnum n last))
-           (dotimes (i n v) (%vset v i (%vref d (- last i))))))
+           (cond ((and (%simple-vector-p v) (%simple-vector-p d) (%fx< last (%svlength d)))
+                  (dotimes (i n v) (%set-svref v i (%svref d (%fx- last i)))))
+                 ((and (%simple-string-p v) (%simple-string-p d) (%fx< last (%string-length d)))
+                  (dotimes (i n v) (%set-schar v i (%schar d (%fx- last i)))))
+                 (t (dotimes (i n v) (%vset v i (%vref d (- last i))))))))
         (t (%type-error seq 'sequence))))
 
 (defun nreverse (seq)
@@ -1402,11 +1453,21 @@ with TYPEP), a class by its superclasses."
         ((vectorp seq)
          (let* ((n (length seq)) (d (%array-storage seq)) (off (%array-total-offset seq)))
            (declare (fixnum n off))
-           (do ((i off (+ i 1)) (j (+ off n -1) (- j 1))) ((>= i j) seq)
-             (declare (fixnum i j))
-             (let ((tmp (%vref d i)))
-               (%vset d i (%vref d j))
-               (%vset d j tmp)))))
+           (cond ((and (%simple-vector-p d) (%fx<= (%fx+ off n) (%svlength d)))
+                  (do ((i off (%fx+ i 1)) (j (%fx+ off (%fx- n 1)) (%fx- j 1))) ((%fx>= i j) seq)
+                    (let ((tmp (%svref d i)))
+                      (%set-svref d i (%svref d j))
+                      (%set-svref d j tmp))))
+                 ((and (%simple-string-p d) (%fx<= (%fx+ off n) (%string-length d)))
+                  (do ((i off (%fx+ i 1)) (j (%fx+ off (%fx- n 1)) (%fx- j 1))) ((%fx>= i j) seq)
+                    (let ((tmp (%schar d i)))
+                      (%set-schar d i (%schar d j))
+                      (%set-schar d j tmp))))
+                 (t (do ((i off (+ i 1)) (j (+ off n -1) (- j 1))) ((>= i j) seq)
+                      (declare (fixnum i j))
+                      (let ((tmp (%vref d i)))
+                        (%vset d i (%vref d j))
+                        (%vset d j tmp)))))))
         (t (%type-error seq 'sequence))))
 
 (defun %seq-to-list (seq &optional (start 0) end)
@@ -1415,9 +1476,17 @@ with TYPEP), a class by its superclasses."
       (let ((r nil) (end (or end (length seq)))
             (d (%array-storage seq)) (off (%array-total-offset seq)))
         (declare (fixnum start end off))
-        (do ((i (- end 1) (- i 1))) ((< i start) r)
-          (declare (fixnum i))
-          (push (%vref d (+ i off)) r)))))
+        ;; (a simple vector's or simple string's elements: read without the
+        ;; dispatch on the storage)
+        (cond ((and (%simple-vector-p d) (%fx<= 0 start) (%fx<= (%fx+ end off) (%svlength d)))
+               (do ((i (%fx+ (%fx- end 1) off) (%fx- i 1)) (lo (%fx+ start off))) ((%fx< i lo) r)
+                 (setq r (cons (%svref d i) r))))
+              ((and (%simple-string-p d) (%fx<= 0 start) (%fx<= (%fx+ end off) (%string-length d)))
+               (do ((i (%fx+ (%fx- end 1) off) (%fx- i 1)) (lo (%fx+ start off))) ((%fx< i lo) r)
+                 (setq r (cons (%schar d i) r))))
+              (t (do ((i (- end 1) (- i 1))) ((< i start) r)
+                   (declare (fixnum i))
+                   (push (%vref d (+ i off)) r)))))))
 
 (defun %list-to-seq-like (list proto)
   (if (listp proto) list (%list-to-vector-like list proto)))
@@ -1459,14 +1528,20 @@ as %SEQ-TYPE-SPEC, with the usual names recognized at once."
             (dolist (s seqs)
               (if (listp s)
                   (dolist (x s) (let ((c (cons x nil))) (%setcdr tail c) (setq tail c)))
-                  (let ((d (%array-storage s)) (off (%array-total-offset s)))
-                    (dotimes (i (length s))
-                      (let ((c (cons (%vref d (+ i off)) nil))) (%setcdr tail c) (setq tail c))))))
+                  (let ((d (%array-storage s)) (off (%array-total-offset s)) (n (length s)))
+                    (declare (fixnum off n))
+                    (if (and (%simple-vector-p d) (%fx<= (%fx+ off n) (%svlength d)))
+                        (do ((i off (%fx+ i 1)) (e (%fx+ off n))) ((%fx>= i e))
+                          (let ((c (cons (%svref d i) nil))) (%setcdr tail c) (setq tail c)))
+                        (dotimes (i n)
+                          (let ((c (cons (%vref d (+ i off)) nil))) (%setcdr tail c) (setq tail c)))))))
             (%check-result-type (cdr head) result-type exact))
           (let ((v (%make-storage total et)) (i 0))
             (dolist (s seqs)
               (if (listp s)
-                  (dolist (x s) (%vset v i x) (setq i (+ i 1)))
+                  (if (%simple-vector-p v)
+                      (dolist (x s) (%svset v i x) (setq i (%fx+ i 1)))
+                      (dolist (x s) (%vset v i x) (setq i (+ i 1))))
                   (let ((n (length s)))
                     (%copy-elements v i (%array-storage s) (%array-total-offset s) n)
                     (setq i (+ i n)))))
@@ -1622,13 +1697,13 @@ F on the elements I; with more sequences runs GENERAL."
       (let* ((end (%check-bounds start end (%seq-length seq)))
              (d (%array-storage seq)) (off (%array-total-offset seq)))
         (declare (fixnum start end off))
-        (if (%simple-vector-p d)
-            (do ((i (+ start off) (+ i 1)) (e (+ end off))) ((>= i e))
-              (declare (fixnum i e))
-              (%set-svref d i item))
-            (do ((i (+ start off) (+ i 1)) (e (+ end off))) ((>= i e))
-              (declare (fixnum i e))
-              (%simple-set d i item)))
+        ;; the storage filled at once (array.fill), unless ITEM is not of its
+        ;; element type or the bounds are beyond it: element by element then,
+        ;; which signals the error
+        (unless (%storage-fill d item (+ start off) (+ end off))
+          (do ((i (+ start off) (+ i 1)) (e (+ end off))) ((>= i e))
+            (declare (fixnum i e))
+            (%simple-set d i item)))
         seq)))
 
 (defun replace (seq1 seq2 &key (start1 0) end1 (start2 0) end2)
@@ -1681,10 +1756,11 @@ F on the elements I; with more sequences runs GENERAL."
            (let ((d1 (%array-storage seq1)) (p1 (+ start1 (%array-total-offset seq1)))
                  (d2 (%array-storage seq2)) (p2 (+ start2 (%array-total-offset seq2))))
              (declare (fixnum p1 p2))
-             (if (and (eq d1 d2) (> p1 p2))
-                 ;; the regions may overlap: copy from the end
-                 (do ((i (- n 1) (- i 1))) ((< i 0)) (%vset d1 (+ p1 i) (%vref d2 (+ p2 i))))
-                 (%copy-elements d1 p1 d2 p2 n)))))
+             (cond ((not (and (eq d1 d2) (> p1 p2))) (%copy-elements d1 p1 d2 p2 n))
+                   ;; the regions may overlap: one copy of the storage (which
+                   ;; allows it), else from the end
+                   ((%storage-copy d1 p1 d2 p2 n))
+                   (t (do ((i (- n 1) (- i 1))) ((< i 0)) (%vset d1 (+ p1 i) (%vref d2 (+ p2 i)))))))))
     seq1))
 
 ;;; searching
@@ -2244,27 +2320,47 @@ list result shares the tail after END."
   (%remove-duplicates seq key test test-not from-end start end t))
 
 ;;; substitution
+;;; A fresh list is made in one pass; a vector is copied and its elements
+;;; replaced, last first when FROM-END, until COUNT are; only a list read from
+;;; its end has the elements to replace found first (%MARK-MATCHES).
 (defun %substitute (new item mode fn neg seq key from-end start end count destructive)
+  (when (and (listp seq) (not destructive) (null count) (not from-end) (eql start 0) (null end))
+    (return-from %substitute
+      (let* ((key (%keyfn key)) (head (cons nil nil)) (tail head))
+        (do ((l seq (cdr l))) ((%endp l) (cdr head))
+          (let* ((x (car l)) (c (cons (if (%match mode fn neg item (%key key x)) new x) nil)))
+            (%setcdr tail c) (setq tail c))))))
   (let* ((key (%keyfn key)) (count (%check-count count))
          (end (%check-bounds start end (%seq-length seq)))
-         ;; with a count, or from the end (the elements are then tested
-         ;; last first), the elements to replace are found first
-         (marks (if (or count from-end) (%mark-matches item mode fn neg seq start end from-end count key) nil))
-         (result (if destructive seq (copy-seq seq))))
-    (declare (fixnum start end))
-    (if (listp result)
-        (do ((l (nthcdr start result) (cdr l)) (i 0 (+ i 1)) (k (- end start) (- k 1))) ((<= k 0))
-          (declare (fixnum i k))
-          (when (if marks (%svref marks i) (%match mode fn neg item (%key key (car l))))
-            (%setcar l new)))
-        (let ((d (%array-storage result)) (off (%array-total-offset result)))
-          (declare (fixnum off))
-          (do ((i start (+ i 1))) ((>= i end))
-            (declare (fixnum i))
-            (when (if marks
-                      (%svref marks (- i start))
-                      (%match mode fn neg item (%key key (%vref d (+ i off)))))
-              (%vset d (+ i off) new)))))
+         (marks (if (and from-end (listp seq))
+                    (%mark-matches item mode fn neg seq start end from-end count key)
+                    nil))
+         (result (if destructive seq (copy-seq seq)))
+         ;; how many more elements to replace
+         (left (if (fixnump count) count most-positive-fixnum)))
+    (declare (fixnum start end left))
+    (cond ((listp result)
+           (do ((l (nthcdr start result) (cdr l)) (i 0 (+ i 1)) (k (- end start) (- k 1)))
+               ((or (<= k 0) (<= left 0)))
+             (declare (fixnum i k))
+             (if marks
+                 (when (%svref marks i) (%setcar l new))
+                 (when (%match mode fn neg item (%key key (car l)))
+                   (%setcar l new) (setq left (- left 1))))))
+          (from-end
+           (let ((d (%array-storage result)) (off (%array-total-offset result)))
+             (declare (fixnum off))
+             (do ((i (- end 1) (- i 1))) ((or (< i start) (<= left 0)))
+               (declare (fixnum i))
+               (when (%match mode fn neg item (%key key (%vref d (+ i off))))
+                 (%vset d (+ i off) new) (setq left (- left 1))))))
+          (t
+           (let ((d (%array-storage result)) (off (%array-total-offset result)))
+             (declare (fixnum off))
+             (do ((i start (+ i 1))) ((or (>= i end) (<= left 0)))
+               (declare (fixnum i))
+               (when (%match mode fn neg item (%key key (%vref d (+ i off))))
+                 (%vset d (+ i off) new) (setq left (- left 1)))))))
     result))
 
 (defun substitute-if (new pred seq &key key from-end (start 0) end count)
@@ -2810,36 +2906,16 @@ they start in it, LEN: the length of S."
        (declare (fixnum ,off ,len))
        ,@body)))
 
-(defmacro %simple-string-region-p (s start end)
-  "S is a simple string and START, END (or NIL) valid bounds in it."
-  `(and (%simple-string-p ,s) (fixnump ,start) (%fx<= 0 ,start)
-        (if ,end (and (fixnump ,end) (%fx<= ,start ,end) (%fx<= ,end (%string-length ,s)))
-            (%fx<= ,start (%string-length ,s)))))
-
-(defmacro %char-fold (c code)
-  "The code of the character C (of code CODE) downcased, as SBCL orders
-strings ignoring case (#\\_ is after the letters): ASCII in place."
-  `(cond ((%fx< ,code 65) ,code)
-         ((%fx<= ,code 90) (%fx+ ,code 32))
-         ((%fx< ,code 128) ,code)
-         (t (%char-code (char-downcase ,c)))))
-
 (defun %string-compare (s1 s2 start1 end1 start2 end2 ci)
   "Compares two string regions.  Returns 4 * the index of the first
 difference in S1 + how S1 compares with S2 there: 0 equal, 1 less, 2 greater."
-  ;; two simple strings: fixnum operations, ASCII case folded in place
-  (when (and (%simple-string-region-p s1 start1 end1) (%simple-string-region-p s2 start2 end2))
-    (let ((e1 (or end1 (%string-length s1))) (e2 (or end2 (%string-length s2))))
-      (do ((i start1 (%fx+ i 1)) (j start2 (%fx+ j 1)))
-          ((or (%fx>= i e1) (%fx>= j e2))
-           (return-from %string-compare
-             (%fx+ (%fx* i 4) (cond ((and (%fx>= i e1) (%fx>= j e2)) 0) ((%fx>= i e1) 1) (t 2)))))
-        (let ((c1 (%schar s1 i)) (c2 (%schar s2 j)))
-          (unless (eq c1 c2)
-            (let ((k1 (%char-code c1)) (k2 (%char-code c2)))
-              (when ci (setq k1 (%char-fold c1 k1) k2 (%char-fold c2 k2)))
-              (unless (eql k1 k2)
-                (return-from %string-compare (%fx+ (%fx* i 4) (if (%fx< k1 k2) 1 2))))))))))
+  ;; strings over simple storage (and symbols) with valid bounds: a loop over
+  ;; the character codes in Wasm (:STRING-COMPARE-GEN, src/prims.lisp)
+  (let ((r (%string-compare-fast s1 s2 start1 end1 start2 end2 ci)))
+    (if (%fx< r 0) (%string-compare-slow s1 s2 start1 end1 start2 end2 ci) r)))
+(defun %string-compare-slow (s1 s2 start1 end1 start2 end2 ci)
+  ;; any string designators and bounds (the errors), characters beyond ASCII
+  ;; compared without case
   (let ((s1 (if (%simple-string-p s1) s1 (string s1)))
         (s2 (if (%simple-string-p s2) s2 (string s2))))
     (%with-string-data ((d1 o1 l1) s1)
@@ -2859,15 +2935,12 @@ difference in S1 + how S1 compares with S2 there: 0 equal, 1 less, 2 greater."
 
 (defun %string-eq (s1 s2 start1 end1 start2 end2 ci)
   "True when the two string regions have the same characters (ignoring case when CI)."
-  (when (and (%simple-string-region-p s1 start1 end1) (%simple-string-region-p s2 start2 end2))
-    (let ((e1 (or end1 (%string-length s1))) (e2 (or end2 (%string-length s2))))
-      (return-from %string-eq
-        (and (eql (%fx- e1 start1) (%fx- e2 start2))
-             (do ((i start1 (%fx+ i 1)) (j start2 (%fx+ j 1))) ((%fx>= i e1) t)
-               (let ((c1 (%schar s1 i)) (c2 (%schar s2 j)))
-                 (unless (or (eq c1 c2)
-                             (and ci (eql (%char-fold c1 (%char-code c1)) (%char-fold c2 (%char-code c2)))))
-                   (return nil))))))))
+  ;; (see %STRING-COMPARE)
+  (let ((r (%string-eq-fast s1 s2 start1 end1 start2 end2 ci)))
+    (cond ((eq r 1) t)
+          ((eq r 0) nil)
+          (t (%string-eq-slow s1 s2 start1 end1 start2 end2 ci)))))
+(defun %string-eq-slow (s1 s2 start1 end1 start2 end2 ci)
   (let ((s1 (if (%simple-string-p s1) s1 (string s1)))
         (s2 (if (%simple-string-p s2) s2 (string s2))))
     (%with-string-data ((d1 o1 l1) s1)
@@ -3220,7 +3293,14 @@ does the same: a test or predicate is called with two."
                                (simple-string . %coerce-to-simple-string)
                                (character . character)
                                (function . %coerce-to-function)))))))
-    (cond (fn `(,fn ,x))
+    (cond
+          ;; a list made in place to a vector: the vector made at once
+          ((and (member type '('vector 'simple-vector) :test #'equal)
+                (consp x) (eq (car x) 'list) (do ((l (cdr x) (cdr l))) ((atom l) (null l))))
+           `(vector ,@(cdr x)))
+          ;; a literal string of one character to a character
+          ((and (equal type ''character) (stringp x) (= (length x) 1)) (char x 0))
+          (fn `(,fn ,x))
           ((equal type ''t) `(values ,x))
           ;; to a float: FLOAT, which the compiler knows (its result type,
           ;; the double or single unboxed), and which signals the same
