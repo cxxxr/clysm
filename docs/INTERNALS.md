@@ -4849,6 +4849,108 @@ What makes the code fast:
     header) takes 5 us, of 20 000 30 us (SBCL 4 and 4), of 200 000 235
     (SBCL 50): the step is V8's large-object threshold, and the
     benchmarks make their one or two vectors a run and nothing twice.
+* **Unsigned accumulator state and short digit kernels** (2026-11-23,
+  continuation of the work above). The baseline is `995c33f`. Instruction
+  profiles (`node --prof --prof-sampling-interval=100`, PCs mapped onto
+  `--print-wasm-code`) separate the three remaining items:
+
+  | item | share of Wasm samples | hot instructions |
+  |---|---|---|
+  | `b-bignum` | 95% in `:big-mul`, with `:mag-mul1` copied into it | the digit product, addition of carry, shift and checked store |
+  | `b-ratio` | 35% in `%gcd-big`, 18% in `%int-truncate`, 17% in products | the remainder loop's `divq` per digit, then quotient division and products by a small integer |
+  | `p-bignum-misc` | 69% in `:big-add`, 11% in the benchmark, 8% in products | the sum loop's bounds checks and carry shifts |
+
+  The SBCL comparison (`sb-sprof` and disassembly of its multiply, add and
+  single-digit truncate kernels) uses `mulx` and `adc` on 64-bit digits.
+  These three items are principally long-by-small products, long sums and
+  reductions, not products of two small bignums. The short kernels below
+  help general arithmetic but do not remove those long-loop costs.
+
+  * An accumulator now has an unsigned state: a second reserved i31 in
+    its eqref local, with all 64 bits in its i64 local. A masked update
+    stores this state above 2^63-1. Wrapped reads use the bits directly;
+    signed arithmetic rejects the mark and its generic fallback makes
+    the unsigned integer. Ordinary reads, comparisons and mixed numeric
+    updates materialize it as well. Aliases introduced for guarded
+    inlining copy the state. The double's mark stays distinct. Functions
+    without logical arithmetic omit all unsigned-marker checks: emitting
+    those checks everywhere enlarged ordinary accumulator code and gave
+    avoidable regressions.
+  * Equal-length products of three through eight digits use generated
+    Comba kernels: constant-index loads into locals, low and high sums of
+    each column, and one `array.new_fixed` for the result. There is no
+    copy through linear memory and no repeated read/write of the output
+    digits. The existing 64-by-64 path handles two digits; unequal lengths
+    and larger products keep the previous row/SIMD paths.
+  * Binary GCD decodes magnitudes through 128 bits into two i64s. It
+    removes powers of two, subtracts and shifts without intermediate
+    integers, and switches to `:gcd64` once both high halves are zero.
+    Keeping the two-word loop all the way to completion was slower on
+    127/128-bit operands (about 180–199 ns versus 147–165); it is not kept.
+    Larger operands still use Lehmer's algorithm.
+  * Integer division through 128 bits by a nonzero unsigned 32-bit
+    magnitude computes the four quotient digits in locals and constructs
+    the quotient and signed remainder directly. Existing Lisp code adjusts
+    truncation to floor. Ratio reduction's exact division by a one-digit
+    divisor uses a separate low-to-high loop: remove powers of two, find
+    the odd divisor's inverse modulo 2^32 with five Newton steps, and
+    multiply/subtract carries. The quotient's length is determined before
+    allocation, avoiding a temporary array and trimming copy.
+  * Remainders by divisors through 65536 consume three 32-bit array
+    digits as two 48-bit chunks. Each remainder fits beside its chunk
+    in an unsigned i64. This removes one of three hardware divisions
+    without allocating or copying digits; the old loop handles trailing
+    digits and larger divisors. Against the preceding changes, all three
+    alternating pairs improved (best 2628 -> 2242 ms for the ratio sum).
+  * Rejected: an f64 reciprocal for the remainder loop, with exact
+    corrections of an estimate at most one away, slowed `b-ratio` from
+    2743/3122 to 3454/3520 ms in alternating runs. Precomputing the sum's
+    final carry to allocate its exact length, together with skipping
+    normalization of long products by fixnums, gave no repeatable benefit
+    (factorial medians 698 -> 702 ms; miscellaneous 701 -> 684, ratio
+    2956 -> 3028). Those changes were reverted. Padding every short
+    product to four digits also wasted products and required a trimming
+    copy for three-digit operands; the separate sizes avoid that.
+
+  Best of three interleaved base/new/SBCL processes: the final three
+  standard files and extended target loops ran on slot 2; operation probes
+  ran on slot 0 before the final remainder change (which they do not use).
+  Operands of those probes are special variables, not foldable constants:
+
+  | operation | before | after |
+  |---|---|---|
+  | xorshift64 step | 13.87 ns | 1.76 ns (SBCL 1.93) |
+  | FNV-1a step | 2.00 ns | 0.85 ns (SBCL 1.86) |
+  | splitmix64 step | 24.61 ns | 12.70 ns (SBCL 28.90) |
+  | products of 3 / 4 / 5 / 6 / 7 / 8 digits | 25 / 24 / 37 / 45 / 48 / 53 ns | 22 / 19 / 21 / 22 / 29 / 34 ns |
+  | GCD, 64 / 65 / 95 bits | 81 / 90 / 136 ns | 45 / 51 / 89 ns |
+  | GCD, 127 / 128 bits | 153 / 133 ns | 138 / 138 ns (little change) |
+  | floor, 95 / 127 / 128 bits by 65537 | 30.5 / 31.5 / 30 ns | 25 / 28.5 / 26 ns |
+  | factorial of 2000, 2000 calls | 730 ms | 728 ms (SBCL 494) |
+  | harmonic sum of 2000 ratios, 2000 calls | 3181 ms | 2564 ms (SBCL 2992) |
+  | `p-bignum-misc`, 6000 calls | 673 ms | 665 ms (SBCL 443) |
+
+  The long sums and products remain effectively unchanged. Geometric means
+  versus SBCL: `suite` 0.660 -> 0.654, `programs` 0.701 -> 0.696,
+  `arith` 0.477 -> 0.467. Operation-probe means: unsigned state
+  1.876 -> 0.569, short products/general floor 1.957 -> 1.604, and
+  small GCD/single-digit floor 0.383 -> 0.314. In the short standard
+  runs, `a-points` was 8 -> 10 ms (both medians 10), and `p-specials`
+  27 -> 29 ms; small/general floor probes also include 80 -> 88 ns
+  (95-bit) and 106 -> 118 ns (159-bit). These are not claimed as wins.
+  A further interleaved `a-points` probe with 500 calls instead of 10
+  measured 367/376/418 -> 372/390/383 ms: no repeatable 25% regression.
+  The shaken one-export module is 910637 -> 921297 bytes (+1.17%,
+  below its 970000-byte budget); the native REPL image is
+  8619050 -> 8663213 bytes (+0.51%).
+  Final test status and the REPL size are recorded in the worktree's
+  `build/CODEX-REPORT.md`. Focused differential tests are
+  `u64-accumulator.lisp`, `small-integer-kernels.lisp` and
+  `ratio-exact-digits.lisp` and `remainder-chunks.lisp`. These cover materialization and mixed numeric
+  transitions, every short product size, long carries, signs, shifts across
+  the 64-bit boundary, quotient/remainder signs, odd/even exact divisors,
+  and the remainder chunk boundary at 65536 across 2–70 digit magnitudes.
+
 * **Division of floats** (`floor ceiling truncate round`, the `f` versions,
   `mod rem`) computes what SBCL does, in the inline code, the helper
   `:divmod` and `%float-divmod` alike: the float quotient rounded for the
