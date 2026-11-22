@@ -7108,6 +7108,255 @@ functions in the table), making the heap's objects 8, the program 8 (the
 host variables, the REPL), and the collections of the young generation
 (10 ms over all of it).
 
+**The floor, and what is above it (2026-11-22).** Whole processes on one
+slot, 40 runs of each one after the other in every round (`tools/startup-ab.mjs`
+does this for the items of `tools/bench-startup.sh` and several builds or
+settings: on a busy machine a process's start differs by 10-20% from run
+to run, more than most of what is measured here), least / median
+milliseconds:
+
+| Process | least | median |
+|---|---|---|
+| `/bin/true` | 1.0 | 1.7 |
+| `sbcl --non-interactive --eval t` | 2.5 | 3.1 |
+| `node -e 0` | 12.2 | 13.6 |
+| `node` of an empty CommonJS file | 10.3 | 13.2 |
+| `node` of an empty ES module | 11.2 | 13.7 |
+| ... that imports `node:fs`, `node:worker_threads`, `node:url` | 13.4 | 15.6 |
+| ... that compiles and instantiates an empty WebAssembly module | 11.1 | 13.5 |
+| `--eval t` from the heap image (main, e5669e1) | 64.8 | 69.8 |
+| `--eval t` without the heap image | 156 | 173 |
+
+Node.js itself is four times SBCL's whole start: no item can go below 11
+to 12 ms, which is 4 times SBCL for `s-start` and 3 times for `s-script`
+whatever Clysm does (with those two at the floor and the others as they
+are the geometric mean would be 2.6). `CLYSM_TRACE_START=1` makes
+`host/run.mjs` print the times of its steps (milliseconds since the
+process started) when it exits. Main, `--eval t`:
+
+| Step | at | took |
+|---|---|---|
+| Node.js until `host/run.mjs` runs (11 for an empty module; `node:worker_threads` is 1.0 of the rest, `node:v8` 0.3) | 13.5 | 13.5 |
+| the main thread chosen (`node:v8`, the heap image is there) | 15 | 1.4 |
+| the engine's flags | 15.2 | 0.2 |
+| the image's octets read from the heap image (8.4 MB) | 17.4 | 2.1 |
+| `WebAssembly.compile` called (it copies the octets) | 19.4 | 1.9 |
+| the heap read (2.6 MB), `host/common.mjs`, `host/lib.mjs` imported, the imports made | 23 | 3.6 |
+| waiting for the module (V8's threads: 12 ms from the call) | 31 | 7 to 8 |
+| instantiated | 42 to 47 | 10.5 to 16 |
+| the heap image's objects made (`image_load` 12.5) | 55 to 63 | 13.5 to 16 |
+| the program | 56 to 65 | 1.2 |
+| the exit event; then Node.js's teardown | | 5 |
+
+and inside those:
+
+* **Collections**: six scavenges, 10.8 ms (`--trace-gc`), four of them
+  while the module is instantiated and the heap image loaded. Everything
+  made lives on (4.1 MB by instantiating, 5.6 MB by `image_load`), the
+  young generation starts at 1 MB and doubles, and what survives one
+  scavenge stays in the young generation until the next: every object is
+  copied twice.
+* **Compiling** (the image as it starts from the heap image, 8.4 MB, in
+  one process again and again): 12.3 ms; 5.6 without its
+  `metadata.code.branch_hint` section (273 KB: V8 makes a table of the
+  hints of each function while it decodes the module), no different without
+  the name section or the `compilationHints`.
+* **Instantiating**: 6.4 ms warm, all of it the 34439 globals (without the
+  element segment of 18404 functions 6.0, without the data segments the
+  same). V8 runs its decoder of functions over each initializer that is
+  not a single constant; modules of 8000 globals of one kind, per global:
+  an `i32.const`, a `ref.null` or a `ref.func` 12 ns to instantiate and 27
+  to compile; `struct.new_default` of a cons 93 and 71; a static closure
+  (seven `ref.func`, two `struct.new`) 320 and 230. The image has 18980
+  default structs (the symbols and the conses that the heap image fills),
+  8029 static closures, 2032 vectors, 5174 mutable nulls.
+* **The heap image's objects**: 29257 of the globals and 96560 others
+  (81815 conses, 8589 strings, 1961 vectors, 1641 instances, 1360 bignums,
+  619 structures, 266 closures); `image_load` takes 2.1 ms when run again
+  and again in one process and 12.5 the first time: three of the scavenges
+  (7 ms); the rest was not found (compiled by TurboFan before it runs, by a
+  compilation hint, below, it is no faster).
+* **After the program**: the engine's tasks for the main thread run as
+  soon as the program returns to the event loop, before a timer or
+  `setImmediate` can: after `(require :asdf)` they are the steps of a
+  collection of the old generation that began while ASDF loaded (the old
+  generation at 20 MB: `--trace-incremental-marking` shows 157 steps and
+  the mark-compact, 8 to 12 ms every time; 0.3 ms after `--eval t`).
+  Then, the event loop empty, Node.js frees the environment and the heap
+  (5 ms). And `process.stdin.isTTY`, which `host/run.mjs` asked when it
+  started, makes the stream of the standard input: 1.7 ms.
+
+What was done (main e5669e1 against this work, and this work with
+`CLYSM_SLOW_EXIT=1`: 20 rounds of all items, one process of each after the
+other, on one slot; least / median ms):
+
+| Item | SBCL | Main | Now | Now, the end left to Node.js |
+|---|---|---|---|---|
+| `s-start` (`--eval t`) | 2.8 / 3.4 | 66.1 / 73.3 | 60.6 / 67.8 | 67.6 / 73.1 |
+| `s-script` | 4.0 / 4.4 | 78.2 / 85.3 | 72.7 / 85.1 | 77.9 / 84.8 |
+| `s-require-asdf` | 48.1 / 50.3 | 181.2 / 200.6 | 173.1 / 188.2 | 183.1 / 199.2 |
+| `s-quicklisp` | 121.4 / 131.9 | 293.8 / 322.4 | 285.0 / 304.6 | 291.3 / 311.6 |
+| `s-ql-alexandria` | 136.0 / 145.4 | 327.4 / 350.7 | 314.2 / 335.3 | 316.5 / 337.5 |
+| `s-ql-cl-ppcre` | 167.3 / 174.3 | 336.3 / 375.5 | 328.2 / 352.1 | 335.5 / 360.4 |
+| `s-ql-babel` | 211.7 / 223.7 | 399.3 / 421.3 | 372.7 / 399.3 | 372.5 / 406.2 |
+| geometric mean / SBCL | | 4.52 / 4.54 | 4.29 / 4.31 | 4.47 / 4.43 |
+
+(Another 20 rounds just before: 4.45 / 4.47 -> 4.30 / 4.27.
+`tools/bench-startup.sh`, best of seven whole milliseconds: 4.38 -> 4.28,
+with SBCL's `s-script` 5 ms in the one and 4 in the other. The machine was
+busy with other work all day: each of these differs from the next by more
+than a single change does, and only runs interleaved in one invocation
+compare.) What runs long is as it was, main against this in two rounds
+one after the other on one slot: `bench/suite.lisp` in the image
+(`MODE=script`) 0.998 of its time, `bench/library.lisp` 1.011,
+`tools/bench-lem.sh` 1.033 (against SBCL 1.01 and 1.07 for main, 1.04 and
+1.05 for this: its rounds differ more than the builds, and none of the
+code that these run changed).
+
+* **The end of the process** (`host/run.mjs`, in the main thread; a
+  program in a worker, `clysm run` or `exec`, ends as before). When the
+  exit event has run its listeners the process ends at once
+  (`process.reallyExit`, as `process.exit()` does; not when a listener was
+  added after the host's): the 5 ms of teardown. And when the program's
+  main function has returned (`%call-as-main-thread` counts its calls,
+  nested in an image started from a heap image, and tells the host when
+  the outermost returns: `%main-done`, `__clysm_main_done`), the host
+  exits if nothing is left that would run later. It looks when the promise
+  jobs queued have run, and those they queue: in a function of
+  `process.nextTick`, which Node.js calls when the queue of jobs is empty
+  and before it goes on to the engine's tasks (twice, as a job may ask for
+  a tick itself); a `setImmediate` would run after the collection. Nothing
+  is left when nothing keeps the event loop alive
+  (`process.getActiveResourcesInfo()`: a timer, a socket, a file being
+  read, a process, an immediate other than the host's own flush of the
+  output), no `beforeExit` listener is there, and the engine owes the
+  program no promise that the event loop does not know of (the host counts
+  the pending `WebAssembly.compile`, `instantiate` and `Atomics.waitAsync`).
+  A program that leaves a timer, a promise job, a chain of 200 `await`s, a
+  tick that makes a job that sets a timer, or a module being compiled with
+  a function to call then, runs them as before (tried so). Whether the
+  input is a terminal is asked for when the REPL first needs it, with
+  `tty.isatty`, which makes no stream: a pipe's or a terminal's handle
+  would be among the active resources at the end.
+  `CLYSM_SLOW_EXIT=1` leaves the end to Node.js. (`--no-incremental-marking-task`
+  set when the program ends does not stop the steps already queued.)
+* **`probe-file`, `truename`, `file-write-date`** asked Node.js three and
+  two times each (`existsSync`, `realpathSync`, `statSync`), and
+  `fs.realpathSync` is written in JavaScript and looks at every directory
+  of the path: 22 µs for a fasl in the cache when warm, about 60 in a
+  process that has just started (on a busy machine). ASDF takes the true name of a file every time it
+  looks up the file's date (`normalize-namestring` in `get-file-stamp`, the
+  key of its cache), the output of every file of a system fasl is the
+  system's fasl, and `contrib/asdf-hooks.lisp` probed each source file
+  before taking its date: loading Quicklisp and Babel made 572 calls of
+  `realpathSync` (33 ms on a busy machine; 87 of them for Babel's fasl),
+  1018 of `existsSync` and 1060 of `statSync`. Now one call of the host
+  each (`__clysm_fs_probe`, `__clysm_fs_mtime` in `host/common.mjs`: `stat`
+  without an exception for a file that is not there, and the system's
+  `realpath`, `fs.realpathSync.native`, 6 µs; a host whose file system is
+  not Node.js's, a page or `CLYSM_TRACE_FILES`, is asked as before), and
+  the system fasl's checks take the date only: 466 `realpath`s of 6 µs,
+  1120 `stat`s of 1 µs, 10 `existsSync`.
+* **`do-symbols`** asked `find-symbol` for the name of every external
+  symbol of every package used (the name hashed again, the tables of the
+  package and of all it uses looked up); a symbol is inherited unless one
+  of its name is present, which two lookups with the hash the symbol
+  already has tell (`%package-symbol-list`): 300 times over a package that
+  uses COMMON-LISP and two others 24 -> 10 ms (SBCL 2: it makes no list).
+  `uiop:define-package` iterates over the symbols of every package it
+  defines (about 40 when ASDF loads): its `ensure-package` is 36 of the
+  59 ms of Lisp code in a profile of `(require :asdf)`, the largest part
+  of the load. `find-symbol`, `gethash` of names in an `equal` table and
+  `do-external-symbols` take SBCL's time once warm (21 / 22, 40 to 51 /
+  36 and 6 / 6 ms in the same test), but here they run in Liftoff's code;
+  loading ASDF's fasl a second and a third time in one process takes 72
+  and 90 ms (SBCL: 43).
+
+Measured and not kept (2026-11-22):
+
+* **No branch hints in the image's large functions**, as in a shaken
+  module (`*runtime-hint-limit*`, see Size and start-up). The image's
+  section has 65249 hints in 6277 functions (273 KB; 3157 of them in
+  functions of 200 octets or less, 11604 up to 800, 27420 up to 3000,
+  23068 in larger ones; 7768 in the 256 toplevel functions, which a heap
+  image never runs), and V8 puts each into a hash table of its function
+  as it decodes the module, before the image can start. Without those of
+  the functions larger than 800 octets (66 KB) the image compiles in 8.3
+  ms instead of 12.3 (300 octets: 7.0; none: 5.6) and `--eval t` is 3.6 ms
+  faster. But `bench/suite.lisp` in the image (`MODE=script`, main against
+  it, two rounds interleaved) is 1.014 of its time, the benchmarks of the
+  runtime's large functions the most (`b-sort` 77 -> 83 ms, `b-print` 71 ->
+  76, `b-string` 74 -> 79, `b-hash` 140 -> 146, `b-format` 104 -> 108; Lem
+  0.985); and without those of the compiler's functions only (`src/`: 179
+  KB with the limit of 800 octets, 150 KB with none), `compile-file` of
+  three benchmark files, warm, best of six in each of three rounds: 1226,
+  1159, 1113 ms with all the hints, 1235, 1218, 1197 with the limit, 1227,
+  1210, 1137 with none. 2 to 5% of what runs long for 3 ms of every start:
+  not kept. (Leaving out only the toplevel functions' would be 0.8 ms.)
+* **The young generation larger at start**, again (see above, 2026-11-21),
+  this time with the growth factor set to 16 only until the heap image is
+  loaded and the engine's own again before the program runs: starting takes
+  two scavenges (2.5 ms) instead of six, `--eval t` 1 to 3 ms and
+  `s-script` 2 to 5 ms faster, but Quicklisp with Alexandria 13 ms slower
+  in both the least and the median of 30 rounds (334 / 351 against 321 /
+  338) and Babel 3 to 4: the 10 MB are still to be copied twice, in two
+  scavenges of 5 ms when the program first fills 16 MB, and the young
+  generation stays that large. On node's command line (which costs nothing
+  now that the program runs in the main thread: `node --min-semi-space-size=16
+  -e 0` takes the time of `node -e 0`): `--min-semi-space-size=16` `--eval t`
+  65 -> 59 ms and `s-script` 77 -> 71, loading ASDF and Babel no faster;
+  `--initial-old-space-size=256` 5 ms slower; `--minor-ms` 3 to 5 ms
+  slower. No flag of V8 13.6 promotes what survives its first scavenge.
+* **Node.js's compile cache** (`NODE_COMPILE_CACHE`) for the host's
+  modules: 63.9 against 62.8 ms; the 112 KB of `host/*.mjs` are compiled
+  lazily and little of them runs. **A start-up snapshot** of the host's
+  JavaScript (`node --snapshot-blob`; `WebAssembly` is there again in the
+  process started from it, so the host's state could be in one): a
+  snapshot of a file that requires `node:fs` and `node:v8` and makes 2000
+  closures is 6.5 MB and its main function runs 14.6 ms after the process
+  starts, an empty CommonJS file at 10.3: reading the snapshot costs more
+  than the 5 ms of importing the host's modules that it could save. A
+  single executable (SEA) was not built: what it has for starting sooner
+  is a code cache and such a snapshot.
+* **Compilation hints of other kinds** (the octet of each function in the
+  `compilationHints` section: the strategy, the first tier, the top tier).
+  For the 1173 functions that the training names: 0x13 (lazy with the
+  first tier, eager with the top one, Liftoff) is as 0x12; 0x03 (the
+  default top tier) makes `s-script` 133 ms instead of 83; 0x23 (TurboFan
+  as the top tier, compiled in the background from the start) `--eval t`
+  550 ms. 0x23 or 0x22 for `:image-load` alone: TurboFan compiles it (5 ms,
+  in a thread, before the image is instantiated) and loading the heap image
+  takes the same 14 ms. 0x23 for the nine helpers of hash tables and of
+  names that the profiles of loading show (`:ht-get`, `:ht-put`,
+  `:ht-get-equal`, `:ht-put-equal`, `:ht-rem`, `:ht-region-index`,
+  `:string-hash`, `:member-eq-loop`, `:package-ref`), so that they do not
+  run in Liftoff's code until they tier up: all the items 0.978 / 0.969 of
+  their time (least / median) in 15 rounds and 0.983 / 1.004 in 25, within
+  what two runs of one build differ by; for 42 helpers 1.011 / 0.998. In
+  the image `bench/suite.lisp` 1.009 and `bench/library.lisp` 1.000 with
+  the nine (they are compiled without the counts of their calls).
+* **`node:worker_threads` imported when a worker is first needed** would
+  save 1 ms, but `isMainThread` comes from it (the worker could be told
+  by an argument instead).
+
+What remains of `--eval t` (58 to 61 ms on the same slot): Node.js and the
+host's modules until the image's octets are being compiled 19 (the floor
+is 11 to 12 for the whole process), the main thread then waiting for the
+module 5 to 8 while it imports the rest, instantiating 10 to 11 and the
+heap image's objects 13 (a third of both the six scavenges), the program
+1, the end 0.5. Of what is above the floor, the globals' initializers
+(about 9 ms to validate and to evaluate), the branch hints (6 to 7 ms of
+the compilation, for part of which the main thread waits), the copying of
+what survives (11 ms) and the 8.4 MB read and copied (4 ms) are the
+engine's work on what the image is; fewer objects made at start would
+lower them (not measured: those that only the compiler uses, made when it
+is first used, which `s-script` and loading a source file then pay at
+once). After the start, loading ASDF is its `define-package`s and Liftoff
+compiling 0.8 MB of ASDF's code (0.28 of it in the background, its
+toplevel functions) and 0.65 MB of the image's that the training did not
+see (30 MB a second, on the main thread, where the functions are first
+called).
+
 ### Allocation, garbage collection and the engine's flags
 
 Objects are V8 heap objects. Node.js is built without pointer compression,
