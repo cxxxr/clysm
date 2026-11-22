@@ -3603,6 +3603,53 @@ to FAIL.  M is a local for limbs."
   (car (nil-code)))
 (defprim clysm-sys::%int-div-small (a b) :mv `(,@a ,@b (:call :int-div-small)))
 
+;;; Exact division by a nonzero one-digit integer.  Cancel powers of two,
+;;; then multiply each low digit by the odd divisor's inverse modulo 2^32.
+;;; Unlike long division this has no hardware divide in the digit loop.
+(defhelper :int-exact-small :ee-e ((a (:ref :null :limbs)) (q (:ref :null :limbs))
+                                  (v :i32) (d :i64) (ka :i32) (n :i32) (qn :i32) (i :i32) (sh :i64)
+                                  (inv :i32) (digit :i32) (carry :i64) (w :i64))
+  `(:block fail nil
+     ,@(num-decode-code 1 'd nil 'ka 'fail nil)
+     (:local.get d) (:i64.const 0) :i64.lt_s
+     (:if nil nil ((:i64.const 0) (:local.get d) :i64.sub (:local.set d)))
+     (:local.get d) :i64.eqz (:br_if fail)
+     (:local.get d) (:i64.const #x100000000) :i64.ge_u (:br_if fail)
+     (:local.get 0) (:ref.test :bignum) :i32.eqz (:br_if fail)
+     (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 1) (:local.tee a)
+     :array.len (:local.set n)
+     (:local.get n) (:local.get a) (:local.get n) (:i32.const 1) :i32.sub
+     (:array.get :limbs) :i64.extend_i32_u (:local.get d) :i64.lt_u :i32.sub (:local.set qn)
+     (:local.get d) :i64.ctz (:local.set sh)
+     (:local.get d) (:local.get sh) :i64.shr_u (:local.set d)
+     (:i32.const 1) (:local.set inv)
+     ,@(loop repeat 5 append
+        '((:local.get inv) (:i32.const 2) (:local.get d) :i32.wrap_i64
+          (:local.get inv) :i32.mul :i32.sub :i32.mul (:local.set inv)))
+     (:local.get qn) (:array.new_default :limbs) (:local.set q)
+     (:block done nil
+       (:loop again nil
+         (:local.get i) (:local.get qn) :i32.ge_u (:br_if done)
+         (:local.get a) (:local.get i) (:array.get :limbs) :i64.extend_i32_u (:local.set w)
+         (:local.get sh) :i64.eqz :i32.eqz
+         (:if nil nil
+           ((:local.get i) (:i32.const 1) :i32.add (:local.get n) :i32.lt_u
+            (:if nil nil
+              ((:local.get a) (:local.get i) (:i32.const 1) :i32.add (:array.get :limbs)
+               :i64.extend_i32_u (:i64.const 32) :i64.shl (:local.get w) :i64.or (:local.set w)))
+            (:local.get w) (:local.get sh) :i64.shr_u (:local.set w)))
+         (:local.get w) :i32.wrap_i64 (:local.get carry) :i32.wrap_i64 :i32.sub
+         (:local.get inv) :i32.mul (:local.set digit)
+         (:local.get q) (:local.get i) (:local.get digit) (:array.set :limbs)
+         (:local.get digit) :i64.extend_i32_u (:local.get d) :i64.mul
+         (:local.get carry) :i64.add (:i64.const 32) :i64.shr_u (:local.set carry)
+         (:local.get i) (:i32.const 1) :i32.add (:local.set i)
+         (:br again)))
+     (:local.get q) (:local.get 0) (:call :int-neg) (:local.get 1) (:call :int-neg)
+     :i32.xor (:call :make-int) :return)
+  (car (nil-code)))
+(defprim clysm-sys::%int-exact-small (a b) :value `(,@a ,@b (:call :int-exact-small)))
+
 ;;; Lehmer's gcd (Knuth 4.5.2, Algorithm L; the form of CPython's
 ;;; _PyLong_GCD): integers A >= B >= 0 are reduced, about a digit of each at
 ;;; a time, by the quotients the leading 60 bits give, while those are
