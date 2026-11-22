@@ -590,4 +590,6 @@ toplevel forms would have done with the host, before the program's own."
   (%init-default-pathname)
   (%init-host-features)
   (mapc #'funcall *restore-image-hooks*)
+  ;; (the image was saved inside a main function: runtime/thread.lisp)
+  (%main-calls-reset)
   (%call-as-main-thread (svref roots 2)))

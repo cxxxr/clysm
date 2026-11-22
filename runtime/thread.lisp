@@ -419,13 +419,21 @@ count, or NIL if TIMEOUT seconds passed."
   (let ((v (ignore-errors (js:global "__clysm_deep_async_stacks"))))
     (eq v t)))
 
+(defvar *%main-calls* 0
+  "The calls of %CALL-AS-MAIN-THREAD whose functions have not returned (MAIN
+calls it inside the function of a heap image, which was called by it).")
+
+(defun %main-calls-reset () (setq *%main-calls* 0))
+
 (defun %call-as-main-thread (function)
   "Call FUNCTION as the main thread, a computation that can wait, where the
 host gives computations deep stacks; else call it."
+  (setq *%main-calls* (+ *%main-calls* 1))
   (if (and (%deep-async-stacks-p) (%threads-supported-p))
       (let ((promise (js:async (lambda ()
                                  (%main-thread)
                                  (funcall function)
+                                 (%main-done)
                                  nil))))
         (js:call promise "catch"
                  (lambda (e)
@@ -433,4 +441,14 @@ host gives computations deep stacks; else call it."
                    (finish-output *error-output*)
                    (%exit 2)))
         nil)
-      (funcall function)))
+      (multiple-value-prog1 (funcall function) (%main-done))))
+
+(defun %main-done ()
+  "Tell the host that the program's main function has returned: a host
+whose process the program owns (host/run.mjs, in the main thread) ends the
+process when nothing is left to do, without waiting for the engine's
+background work (see \"Start-up and loading\" in docs/INTERNALS.md)."
+  (setq *%main-calls* (- *%main-calls* 1))
+  (when (eql *%main-calls* 0)
+    (let ((f (js:global "__clysm_main_done")))
+      (when f (js:funcall f)))))
