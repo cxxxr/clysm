@@ -2236,6 +2236,13 @@ JavaScript written for it (`tests/lib/package.lisp`):
   have no `create` or `default`. A constant is a copy there, not the value
   the loaded library has: an object that Lisp changes later is better a
   function's value.
+- `(js:library-options :embed t :compression :gzip)` additionally compresses
+  the embedded bytes before base64 encoding. A bundled MIT-licensed fflate
+  0.8.3 decoder restores them synchronously, including function/source names.
+  No fetch, eval, worker, or asynchronous startup is needed. It works with
+  eager and lazy libraries; `useLibrary` still accepts uncompressed Wasm
+  bytes or a compiled module. Compression defaults to NIL and requires
+  EMBED. Only compressed libraries copy the decoder and its license.
 - `(js:library-options :embed t)`: the modules hold the module's bytes (in
   base64) and load it with `host/web/lib.mjs`, which imports no module of
   Node.js: a library for a page, a browser's worker or Electron's renderer,
