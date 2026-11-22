@@ -11,7 +11,7 @@
 #                                         kept function and what kept it to REPORT; --eval-string
 #                                         keeps the reader and evaluator for the host's eval_string
 #                                         (a module without --shake always has them)
-#   clysm build [--system NAME]... [--asd FILE.asd]... [--load FILE]... [--asdf] [--shake] [--eval FORM]... [-o OUT.wasm] [FILE...]
+#   clysm build [--system NAME]... [--asd FILE.asd]... [--load FILE]... [--asdf] [--shake] [--eval FORM]... [--main FUNCTION [--image]] [-o OUT.wasm] [FILE...]
 #                                         build an application into ONE module with the runtime:
 #                                         the ASDF systems NAME (found as (require :asdf) and
 #                                         Quicklisp find them, or defined by FILE.asd) with the
@@ -22,6 +22,9 @@
 #                                         --load: a file loaded there first (where the systems are)
 #                                         --asdf: ASDF and UIOP are part of the program;
 #                                         --shake: without the functions nothing refers to
+#                                         --main: the function the program runs; with --image
+#                                         the heap after the toplevel forms ran is saved in
+#                                         OUT.img, and `clysm exec OUT.wasm` starts from it
 #                                         (see docs/INTERNALS.md, "Applications in one module")
 #   clysm run FILE... [-- ARGS]           compile and run on Node.js
 #   clysm repl [--interp] [--no-userinit] start the REPL (runs in Wasm; each form is compiled
@@ -136,8 +139,28 @@ case "$cmd" in
           img="$(repl_image)"; heap_image "$img"
           CLYSM_SWANK_PORT="$port" exec "$NODE" $NURSERY "$ROOT/host/run.mjs" "$img" "$ROOT/contrib/swank/start.lisp" ;;
   build)  img="$(repl_image)"; heap_image "$img"
-          exec "$NODE" $NURSERY "$ROOT/host/run.mjs" "$img" "$ROOT/tools/static-build.lisp" "$@" ;;
-  exec)   img="$1"; shift; exec "$NODE" $NURSERY "$ROOT/host/run.mjs" "$img" "$@" ;;
+          # --image: the heap of the program after its toplevel forms ran is
+          # saved next to the module (OUT.img), and `clysm exec` starts from it
+          out="a.wasm"; image=""; prev=""
+          for a in "$@"; do
+            [ "$prev" = "-o" ] && out="$a"
+            [ "$a" = "--image" ] && image=1
+            prev="$a"
+          done
+          [ -n "$image" ] || exec "$NODE" $NURSERY "$ROOT/host/run.mjs" "$img" "$ROOT/tools/static-build.lisp" "$@"
+          rm -f "${out%.wasm}.img"
+          "$NODE" $NURSERY "$ROOT/host/run.mjs" "$img" "$ROOT/tools/static-build.lisp" "$@" || exit 1
+          unset CLYSM_IMAGE
+          CLYSM_SAVE_IMAGE=1 CLYSM_APP_IMAGE="${out%.wasm}.img.tmp$$" "$NODE" "$ROOT/host/run.mjs" "$out" </dev/null \
+            && mv -f "${out%.wasm}.img.tmp$$" "${out%.wasm}.img" \
+            || { rm -f "${out%.wasm}.img.tmp$$"; echo "clysm build: the heap image was not saved" >&2; exit 1; }
+          echo "; wrote ${out%.wasm}.img ($(wc -c < "${out%.wasm}.img") bytes)" >&2 ;;
+  exec)   img="$1"; shift
+          # (a program built with --image starts from its heap image)
+          himg="${img%.wasm}.img"
+          if [ -z "$CLYSM_IMAGE" ] && [ -z "$CLYSM_SAVE_IMAGE" ] && [ -z "$CLYSM_NO_HEAP_IMAGE" ] \
+             && [ -f "$himg" ] && [ ! "$img" -nt "$himg" ]; then export CLYSM_IMAGE="$himg"; fi
+          exec "$NODE" $NURSERY "$ROOT/host/run.mjs" "$img" "$@" ;;
   test)   exec "$NODE" "$ROOT/bin/clysm.mjs" test "$@" ;;
   image-interp) interp_image ;;
   image-native) repl_image ;;

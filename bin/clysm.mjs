@@ -5,7 +5,7 @@
 //   clysm compile [--shake] FILE... [-o OUT.wasm]
 //   clysm library [--shake] FILE... -o DIR/NAME.wasm   (NAME.wasm.debug, NAME.mjs, NAME.d.ts too)
 //   clysm run [--shake] FILE... [-- ARGS]
-//   clysm build [--system NAME]... [--asd FILE.asd]... [--load FILE]... [--asdf] [--shake] [--eval FORM]... [-o OUT.wasm] [FILE...]
+//   clysm build [--system NAME]... [--asd FILE.asd]... [--load FILE]... [--asdf] [--shake] [--eval FORM]... [--main FUNCTION [--image]] [-o OUT.wasm] [FILE...]
 //                            (an application with its ASDF systems as one module)
 //   clysm exec OUT.wasm [ARGS]
 //   clysm test [--watch] [-j N] [--dom] [--system NAME [--asd FILE.asd]] FILE...
@@ -199,9 +199,15 @@ switch (cmd) {
   case 'test':
     await test(args);
     break;
-  case 'exec':
-    process.exit(run([runHost, ...args]));
+  case 'exec': {
+    // (a program built with --image starts from its heap image)
+    const heap = (args[0] || '').replace(/\.wasm$/, '.img');
+    const env = process.env;
+    const use = !env.CLYSM_IMAGE && !env.CLYSM_SAVE_IMAGE && !env.CLYSM_NO_HEAP_IMAGE && heap !== args[0]
+      && fs.existsSync(heap) && fs.statSync(heap).mtimeMs >= fs.statSync(args[0]).mtimeMs;
+    process.exit(run([nursery, runHost, ...args], use ? { env: { ...env, CLYSM_IMAGE: heap } } : {}));
     break;
+  }
   case 'repl': case 'script': case 'eval': {
     if (!replImage) { console.error('clysm: the REPL image (clysm-native.wasm) is missing'); process.exit(1); }
     // (clysm eval [--no-userinit] FORM...)
@@ -213,8 +219,22 @@ switch (cmd) {
   case 'build': {
     // the REPL image builds the program (src/static.lisp)
     if (!replImage) { console.error('clysm: the REPL image (clysm-native.wasm) is missing'); process.exit(1); }
-    process.exit(run([nursery, runHost, replImage, path.join(root, 'tools', 'static-build.lisp'), ...args],
-                     { env: replEnv() }));
+    const status = run([nursery, runHost, replImage, path.join(root, 'tools', 'static-build.lisp'), ...args],
+                       { env: replEnv() });
+    // --image: the heap of the program after its toplevel forms ran, next to
+    // the module (OUT.img), from which `clysm exec` starts it
+    if (status === 0 && args.includes('--image')) {
+      const o = args.indexOf('-o');
+      const out = path.resolve(o >= 0 ? args[o + 1] : 'a.wasm');
+      const heap = out.replace(/\.wasm$/, '.img');
+      fs.rmSync(heap, { force: true });
+      const env = { ...process.env, CLYSM_SAVE_IMAGE: '1', CLYSM_APP_IMAGE: heap };
+      delete env.CLYSM_IMAGE;
+      const saved = run([runHost, out], { env, stdio: ['ignore', 'inherit', 'inherit'] });
+      if (saved !== 0 || !fs.existsSync(heap)) { console.error('clysm build: the heap image was not saved'); process.exit(1); }
+      console.error(`; wrote ${heap} (${fs.statSync(heap).size} bytes)`);
+    }
+    process.exit(status);
     break;
   }
   case 'swank': {

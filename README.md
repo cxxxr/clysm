@@ -78,6 +78,7 @@ $ bin/clysm build --system cl-ppcre --system my-app --eval '(my-app:main)' -o ap
 $ bin/clysm exec app.wasm ARGS
 $ bin/clysm build --asd ./my-app.asd --system my-app main.lisp -o app.wasm   # a system defined here, and a file
 $ bin/clysm build --load setup.lisp --system my-app -o app.wasm              # setup.lisp tells ASDF where the systems are
+$ bin/clysm build --system my-app --main my-app:main --image -o app.wasm     # app.img too: `clysm exec app.wasm` starts from it
 ```
 
 The REPL image does the build: ASDF loads the systems into it as ever, and
@@ -97,6 +98,10 @@ systems:
 * `--shake` leaves out the functions that nothing of the program refers
   to, as for `clysm compile` (the program must not call functions by names
   it makes when it runs, nor `eval` forms kept as data);
+* with `--main FUNCTION --image` the heap of the program after its toplevel
+  forms ran is saved next to the module (`app.img`), and `clysm exec` starts
+  the program from it by calling the function (Lem's benchmark program, 397
+  files: 1.1 -> 0.3 s);
 * ASDF and UIOP are in the program when a system depends on one of them or
   with `--asdf` (2.8 MB more); the program's ASDF knows the systems built in
   as loaded (`asdf:find-system`, `asdf:system-relative-pathname` answer).
