@@ -2513,6 +2513,9 @@ NIL when there is nothing it could call."
                              (if (eq ,state t)
                                  (block ,tree ,@forms)
                                  (unless (eq ,state :dead)
+                                   ;; (a function made later for other methods)
+                                   (when (functionp ,state)
+                                     (return-from ,disc (funcall (the function ,state) ,@vars)))
                                    (clysm-sys::%gf-disc-arm ,cells-var
                                                  (lambda () (vector ,@(mapcar (lambda (s) `(clysm-sys::%static-function ,s)) fsyms)))))))
                            ,(clysm-sys::%gf-unit-fallback name vars))))

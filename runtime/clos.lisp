@@ -2734,8 +2734,10 @@ the REPL: in a whole program the runtime's code is in the methods' module)."
 ;;; whose function is not known), the call is the one made before: the cache
 ;;; of the call site, or the generic function.
 ;;;   cells: #(state descriptor c function... class...)  STATE: T (the tree
-;;;   is valid), NIL or the number of calls since (not compared yet) or :DEAD
-;;;   (the methods are others); C: the index of the first class
+;;;   is valid), NIL or the number of calls since (not compared yet), :DEAD
+;;;   (the methods are others), a negative number (the same, counting the
+;;;   calls until a function is made for the methods as they are) or that
+;;;   function; C: the index of the first class
 ;;;   descriptor: (name n methods checks), METHODS ((qualifiers specializers
 ;;;   ref) ...), REF the index of the method's function among those of the
 ;;;   unit, (cell . kind) for a method defined before, or NIL; CHECKS
@@ -2751,18 +2753,50 @@ the REPL: in a whole program the runtime's code is in the methods' module)."
 the generic function as it is now, and let it use its tree when they agree:
 at the fourth call since the methods or classes last changed (a program being
 loaded changes them at every definition, and calls most generic functions a
-few times, if at all, in between)."
+few times, if at all, in between).  When they do not agree (a unit loaded
+later added a method) and the compiler is in the image, the state counts
+500 more calls (a negative number) and then becomes a discriminating function
+made from the generic function as it is (%GF-DISC-REGENERATE), which the
+function of CELLS calls."
   (let ((s (%svref cells 0)))
     (cond ((null s) (%set-svref cells 0 1))
-          ((and (fixnump s) (%fx< s 3)) (%set-svref cells 0 (%fx+ s 1)))
-          ((fixnump s)
+          ((not (fixnump s)) nil)
+          ((%fx< s -1) (%set-svref cells 0 (%fx+ s 1)))
+          ((eq s -1)
+           (%set-svref cells 0 :dead)
+           (let ((f (%gf-disc-regenerate (car (%svref cells 1)))))
+             (when (and f (eq (%svref cells 0) :dead)) (%set-svref cells 0 f))))
+          ((%fx< s 3) (%set-svref cells 0 (%fx+ s 1)))
+          (t
            (%call-with-world-lock
             (lambda ()
               (when (fixnump (%svref cells 0))
                 (%set-svref cells 0 :dead)
                 (push cells *gf-discs*)
-                (when (%gf-disc-valid-p cells (funcall thunk))
-                  (%set-svref cells 0 t)))))))))
+                (cond ((%gf-disc-valid-p cells (funcall thunk)) (%set-svref cells 0 t))
+                      ((and (boundp '*native-eval-hook*) (symbol-value '*native-eval-hook*))
+                       (%set-svref cells 0 -500))))))))))
+
+(defun %gf-disc-regenerate (name)
+  "A discriminating function of the generic function NAME made now, from its
+methods as they are (all called through cells), or NIL: one for the methods
+and classes as they are (the property %GF-DISC-REPLACEMENT of NAME,
+(epoch count . function)), and at most six in all for a name."
+  (let ((e (get name '%gf-disc-replacement)))
+    (cond ((and e (eql (car e) *clos-epoch*)) (cddr e))
+          ((and e (>= (cadr e) 6)) nil)
+          (t
+           (%put name '%gf-disc-replacement (list* *clos-epoch* (+ 1 (if e (cadr e) 0)) nil))
+           (let* ((epoch *clos-epoch*)
+                  (d (make-symbol "DISCRIMINATOR"))
+                  (forms (let ((*gf-unit* (%make-gf-unit)))
+                           (%gf-disc-form *gf-unit* name d (lambda (s) (declare (ignore s)) nil))))
+                  (f (and forms
+                          (ignore-errors
+                           (funcall (compile nil (list 'lambda '() (cons 'progn (cdr forms)) (car forms))))))))
+             (when (and (functionp f) (eql epoch *clos-epoch*))
+               (setf (cddr (get name '%gf-disc-replacement)) f)
+               f))))))
 
 (defun %gf-disc-valid-p (cells fns)
   (destructuring-bind (name n methods checks) (%svref cells 1)
