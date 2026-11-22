@@ -9997,6 +9997,36 @@ loaded is then done when the image is saved, on the machine that builds: a
 program that reads its environment in a toplevel form (a path, the time,
 a file) has what it read then, as with any saved image.
 
+**`l-babel` built and loaded: no interaction, large objects** (2026-11-23).
+The table above has `l-babel` slower built (1.5-1.7) than loaded
+(1.4-1.5). Measured again, alternately on one slot: babel alone in a
+module, 300 repetitions, 598, 619, 613 ms built and 582, 616, 625 loaded
+(SBCL 420-428); 50 repetitions, 97-111 and 97-107; in the whole
+`bench/libs.lisp`, 94-104 built and 92-98 loaded (five rounds: the built
+program has runs at 95 and at 104, the loaded one stays under 98; a
+nursery of 64 MB from the start, `--min-semi-space-size=64`, does not
+remove them: 99-107). There is nothing between the parts to fix: the code
+is the same and the collector is 7% (four scavenges of 1.8 ms).
+What the benchmark has against SBCL in both modes is **the allocation of
+large objects**: each repetition makes two strings of 330 000 characters
+(1.3 MB) and two vectors of octets, and a third of its time is
+`:make-storage`, `make-string` and `%concatenate-2-strings`. The same 990
+million characters allocated as strings of N characters (`make-string`,
+ms; SBCL in parentheses): N = 1000: 130-176 (323-345), 20 000: 75-171
+(300-369), 30 000: 81-176 (288-308), 40 000: 662-701 (266-277), 100 000:
+577-599 (276), 330 000: 527-541 (321-340), 1 000 000: 527-531 (407-427).
+Under the engine's limit of a regular object (128 KB: 32 000 characters)
+Clysm allocates faster than SBCL; over it the object is a page of its own
+in the engine's space of large objects, mapped when it is made and
+unmapped at the scavenge after: its 4 KB pages are faulted in every time
+(a million faults for those 4 GB, about 400 ms), where SBCL's nursery is
+the same memory again. Filling with zero instead of a space is no faster
+(864-987 against 854-957 ms for 3000 strings of 330 000), and the engine
+has no flag that keeps such pages (`--v8-options`: only regular pages are
+pooled); transparent huge pages are `madvise` on this machine and the
+engine does not ask. Not fixed: it is the engine's, and a string in
+pieces would cost every string operation.
+
 **What a closed world does not give `a-esrap` and `a-cl-json-decode`**
 (2026-11-23; measured and not kept). Alone in a built module, 20
 repetitions: esrap 745-800 ms against SBCL's 571-589 (1.31), cl-json's
