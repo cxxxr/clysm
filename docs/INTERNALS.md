@@ -2197,6 +2197,27 @@ JavaScript written for it (`tests/lib/package.lisp`):
   one defined before; `:super-arguments` are the positions of the
   constructor's arguments given to the constructor it extends. `new` and
   `instanceof` work from JavaScript and from Lisp (`JS:NEW` of the class).
+- `JS:ENTRYPOINT` registers a synchronous initializer for a named entry of
+  a lazy library. The generator records it without running it. Importing
+  the generated entry calls it once under normal ES module caching. It
+  receives a context with `url` (the entry or containing bundle's URL),
+  `modules` and `environment`; `(js:entry-context "worker")` returns that
+  context from other Lisp functions too. Registration itself loads no Wasm.
+  `:when` is a declarative predicate evaluated before loading the library:
+  `(:and (:equal (:global "process" "env" "WORKER") "1")
+  (:function (:global "process" "send")))`. Globals use optional property
+  access. Other operators are `:or`, `:not` and `:present` (not null or
+  undefined); literals are strings, numbers, booleans and null. No raw
+  JavaScript expression is accepted. An omitted predicate always runs.
+  `:imports '(("typescript" "default") ("node:fs" "*"))` adds static ES
+  imports to the entry's generated `.entry.mjs` helper and provides them
+  through `JS:MODULE`. Imports must be registered before the library loads;
+  explicit `useLibrary` modules take precedence. `:environment '("SERVER")`
+  captures literal `process.env.SERVER`, allowing a bundler's define to
+  replace it. `:shebang t` makes a Node executable entry. `:errors :stderr`
+  reports a synchronous startup error's message and sets exitCode to 1;
+  otherwise it propagates. The initializer handles any asynchronous work
+  it starts. Initializers are private metadata, not extra named exports.
 - `JS:THROW` throws a value of JavaScript out of the call that JavaScript
   made, as it is: an Error of its own class, or `new Error(message)` as
   JavaScript code would have thrown it. In Lisp it is a `JS:JS-ERROR`,

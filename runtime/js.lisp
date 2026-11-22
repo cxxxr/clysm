@@ -13,7 +13,7 @@
            "MODULE" "REQUIRE" "IMPORT" "TO-OCTETS" "FROM-OCTETS"
            "THROW" "DEFINE-CLASS" "DECLARE-TYPES" "REEXPORT" "LIBRARY-OPTIONS"
            "GET-RAW" "CALL-RAW" "FUNCALL-RAW" "RAW-FUNCTION" "AWAIT-RAW" "JS-ERROR-THROWN"
-           "LIBRARY-LOCATION"))
+           "LIBRARY-LOCATION" "ENTRYPOINT" "ENTRY-CONTEXT"))
 
 (defun js:js-value-p (x) (%foreignp x))
 
@@ -598,6 +598,44 @@ bytes or a module (an embedded library) and no `location` with them.  What
 ships beside the module is found from it."
   (let ((location (js:get (%js-library) "location")))
     (and (stringp location) location)))
+
+(defun %js-entry-expression (value)
+  (cond ((consp value) (map 'vector #'%js-entry-expression value))
+        ((and (keywordp value) (not (member value '(:true :false :null))))
+         (string-downcase (symbol-name value)))
+        (t value)))
+
+(defun js:entrypoint (function &key entry ((:when condition) nil condition-p)
+                                  imports environment shebang errors)
+  "Register a synchronous initializer for a named entry of a lazy library.
+It runs on importing that generated entry, not while generating it. The
+function receives its entry context (url, environment and imported modules).
+WHEN is a declarative predicate over globals, evaluated before loading Wasm.
+IMPORTS lists (module-specifier export-name) pairs; \"*\" means the namespace.
+ENVIRONMENT lists process.env names to capture in generated source, allowing
+a bundler to replace them. SHEBANG emits a Node executable header. ERRORS may
+be :STDERR to report a synchronous startup failure and set process.exitCode."
+  (unless (functionp function) (%type-error function 'function))
+  (unless (member errors '(nil :stderr))
+    (error "JS:ENTRYPOINT: ERRORS is NIL or :STDERR"))
+  (let* ((library (%js-library))
+         (entries (or (js:get library "entrypoints")
+                      (js:set library "entrypoints" (js:array)))))
+    (js:call entries "push"
+             (js:object "entry" entry "run" function
+                        "condition" (if condition-p (%js-entry-expression condition) t)
+                        "imports" (map 'vector (lambda (spec) (coerce spec 'vector)) imports)
+                        "environment" (coerce environment 'vector)
+                        "shebang" (if shebang t :false)
+                        "errors" (if errors "stderr" :null))))
+  nil)
+
+(defun js:entry-context (entry)
+  "The generated entry's context, or NIL if that entry has not been imported.
+Registering a context does not load a lazy library. Its URL names the entry
+or its containing bundle, independently of JS:LIBRARY-LOCATION's Wasm URL."
+  (let ((contexts (js:get (%js-library) "entryContexts")))
+    (and contexts (js:get contexts entry))))
 
 (defun js:declare-types (text &key entry)
   "Add TEXT, TypeScript declarations (interfaces, types), to the .d.ts of the

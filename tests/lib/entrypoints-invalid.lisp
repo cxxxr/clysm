@@ -1,0 +1,11 @@
+(js:library-options :lazy t)
+(let* ((mode (js:get (js:get (js:global "process") "env") "CLYSM_ENTRY_INVALID"))
+       (condition (if (equal mode "condition") '(:unknown "no source injection") t)))
+  (when (equal mode "eager") (js:library-options))
+  (js:entrypoint (lambda (context) (declare (ignore context)))
+                :entry (if (equal mode "name") "../outside" "start")
+                :when condition
+                :imports (when (equal mode "imports") '(("node:path" "bad-name")))
+                :environment (when (equal mode "environment") '("BAD-NAME")))
+  (when (equal mode "duplicate")
+    (js:entrypoint (lambda (context) (declare (ignore context))) :entry "start")))
