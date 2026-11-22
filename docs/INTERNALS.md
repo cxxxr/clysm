@@ -8864,12 +8864,28 @@ Alexandria's own tests fail it (rt evaluates the forms of the tests, kept
 as data, when it runs: the functions they name are not referred to by
 code).
 
+**A heap image of a built program** (`--main FUNCTION --image`). The
+mechanism of the REPL image (Heap images) serves a built program as it is:
+its module has the image functions of any whole program. `--main` ends the
+program with a form that calls FUNCTION, or, with `CLYSM_APP_IMAGE` in the
+environment, saves the heap there with FUNCTION as what to call
+(`sys::save-image`); `bin/clysm build --image` runs the module once that
+way (`CLYSM_SAVE_IMAGE=1`) and leaves `OUT.img` next to `OUT.wasm`, and
+`clysm exec OUT.wasm` starts from it when it is there and not older than
+the module (`CLYSM_NO_HEAP_IMAGE=1`: not). The toplevel forms of the
+systems then do not run at a start. `tests/static`'s application 0.30 ->
+0.09 s (an image of 6.4 MB); Lem's benchmark program (41 systems, 397
+files, ASDF) to its first form 1.0-1.2 -> 0.30-0.39 s, an image of 52 MB
+beside the module of 34 MB; its benchmarks take the same time started
+either way (two rounds on a slot). What the systems do when they are
+loaded is then done when the image is saved, on the machine that builds: a
+program that reads its environment in a toplevel form (a path, the time,
+a file) has what it read then, as with any saved image.
+
 Next: the heap of a shaken built program made beforehand (preinit in the
-image); the keyed entry for keyword calls of generic functions
-in `clysm compile` too (the layouts of the generic functions the program
-itself defines are known when the call is compiled); a heap image of the
-built program for its start (the toplevel forms of all its files run at each
-start); the module in a browser page (`host/web`).
+image); the linked image and compilation hints for the start of a built
+program (as Lem's desktop application has); the module in a browser page
+(`host/web`).
 
 ### Where functions are, in stack traces
 

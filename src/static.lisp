@@ -341,7 +341,7 @@ one of them), which knows its systems as loaded."
 
 (defun static-build-main (args)
   "The command `clysm build`: [--system NAME]... [--eval FORM]... [-o OUT.wasm] FILE..."
-  (let ((systems nil) (files nil) (forms nil) (asds nil) (loads nil) (asdf nil) (shake nil) (output "a.wasm"))
+  (let ((systems nil) (files nil) (forms nil) (asds nil) (loads nil) (asdf nil) (shake nil) (main nil) (output "a.wasm"))
     (loop while args
           do (let ((a (pop args)))
                (cond ((string= a "--system") (push (pop args) systems))
@@ -349,6 +349,9 @@ one of them), which knows its systems as loaded."
                      ((string= a "--load") (push (pop args) loads))
                      ((string= a "--asdf") (setq asdf t))
                      ((string= a "--shake") (setq shake t))
+                     ((string= a "--main") (setq main (pop args)))
+                     ;; (bin/clysm saves the heap image once the module is built)
+                     ((string= a "--image") nil)
                      ((string= a "--eval") (push (pop args) forms))
                      ((string= a "-o") (setq output (pop args)))
                      (t (push a files)))))
@@ -357,8 +360,15 @@ one of them), which knows its systems as loaded."
                             (clysm-sys::%backtrace 12)
                             (clysm-sys::%exit 1))))
       (unless (or systems files forms)
-        (format *error-output* "usage: clysm build [--system NAME]... [--asd FILE.asd]... [--load FILE]... [--asdf] [--shake] [--eval FORM]... [-o OUT.wasm] [FILE...]~%")
+        (format *error-output* "usage: clysm build [--system NAME]... [--asd FILE.asd]... [--load FILE]... [--asdf] [--shake] [--eval FORM]... [--main FUNCTION [--image]] [-o OUT.wasm] [FILE...]~%")
         (clysm-sys::%exit 2))
+      ;; --main NAME: the function the program runs; with CLYSM_APP_IMAGE in
+      ;; the environment the program saves its heap image there instead,
+      ;; from which it then starts by calling the function (runtime/image.lisp)
+      (when main
+        (push (format nil "(if (sys::%getenv \"CLYSM_APP_IMAGE\") (sys::save-image (sys::%getenv \"CLYSM_APP_IMAGE\") (function ~A)) (~A))"
+                      main main)
+              forms))
       (static-build :systems (nreverse systems) :files (nreverse files) :forms (nreverse forms)
                     :asds (nreverse asds) :loads (nreverse loads) :asdf asdf :shake shake :output output))
     (clysm-sys::%exit 0)))
