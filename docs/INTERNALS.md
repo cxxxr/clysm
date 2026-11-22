@@ -5638,6 +5638,37 @@ What makes the code fast:
   that observed regression with the result, rather than claiming every
   list operation benefits.
 
+  *Keyed constructor after-methods* (2026-11-23). `%creation-afters`
+  instantiates each method's existing `+method-keyed-maker+` against the
+  constructor's actual keys. When every applicable after-method supports
+  that ABI, slot 7 of the after-plan holds the two lists of keyed functions.
+  Fixed constructor entries whose slot 16 is current pass the original
+  argument values in four slots, with a shared vector for values beyond
+  the fourth, rather than making and searching an initarg plist. Absent
+  keywords, supplied-p parameters, repeated keys and method ordering retain
+  their existing keyed-method semantics. Constructors with default initargs
+  or nonconstant initforms, and method sets requiring an actual rest list,
+  retain the list path. Method changes invalidate the plan as before.
+  `tests/cases/make-instance-keyed-afters.lisp` covers both ABIs, original
+  argument values after slot mutation, duplicates, defaults and replacement.
+
+  The loops are in `%ctor-make-instance-N/KEYED-AFTERS`, not in `/OTHER`:
+  putting them inline first slowed the default-initarg probe 265-270 ->
+  300-305 ms and dynamic classes 211-215 -> 231-233. Separating the helper
+  recovered those costs and improved the keyword target further. Two
+  interleaved rounds on slot 2, four million instances: the one-slot class
+  with a keyword 107/109 -> 69/65 ms (SBCL 80/85); empty &KEY 67/68 ->
+  63/62; the &REST fallback 83/82 -> 75/77; the default-initarg probe
+  270/288 -> 263/271; plain classes 31/31 -> 31/30. These small changes
+  should not be read more precisely than the spread of the runs.
+
+  For both new optimizations together against `04a79e5`, the geometric
+  means of Clysm's time per item (new/base, two interleaved rounds) are:
+  suite 1.003/1.018, CLOS 0.986/0.993, programs 0.969/0.972. Against SBCL
+  they are suite 0.628/0.616, CLOS 0.698/0.692, programs 0.689/0.679.
+  These are limited call-site optimizations; the generic-function rest
+  list and the generic constructor path are not eliminated.
+
   Sizes of the round: the REPL image 8,596,135 → 8,629,564 bytes (the
   making of the spread trees, the constructors' `:after` paths: nine
   entries each with its other part), the shaken module of one export
