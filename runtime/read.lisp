@@ -1182,6 +1182,12 @@ token is empty when the next character ends a token."
       (set-dispatch-macro-character #\# ch (lambda (s c n) (declare (ignore n))
                                              (%reader-error s "#~A cannot be read" c))))
     (setq *standard-readtable* rt)
+    ;; The printer needs the standard syntax, not the reader macro functions.
+    (let ((syntax (%make-readtable :ascii (copy-seq (%rt-ascii rt)))))
+      (maphash (lambda (char function)
+                 (when function (setf (gethash char (%rt-macros syntax)) t)))
+               (%rt-macros rt))
+      (setq *print-default-readtable* syntax))
     (setq *readtable* (copy-readtable rt))
     rt))
 

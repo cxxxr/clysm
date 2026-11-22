@@ -74,6 +74,10 @@ for mode in eager lazy; do
 done
 node tests/lib/compressed.mjs build/lib-test/compressed-lazy lazy bytes || exit 1
 node tests/lib/compressed.mjs build/lib-test/compressed-lazy lazy module || exit 1
+# the printer without the reader's macro functions
+bin/clysm library --shake tests/lib/print-only.lisp -o build/lib-test/print-only.wasm > build/lib-test.log 2>&1 \
+  || { cat build/lib-test.log; exit 1; }
+node tests/lib/print-only.mjs build/lib-test/print-only.mjs || exit 1
 # the size of a module of one export (tests/lib/one.lisp)
 bin/clysm library --shake tests/lib/one.lisp -o build/lib-test/one.wasm > build/lib-test.log 2>&1 \
   || { cat build/lib-test.log; exit 1; }
