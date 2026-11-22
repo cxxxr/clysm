@@ -837,9 +837,12 @@ image is loaded, from words written as LEB128 numbers."
           ;; the objects
           (dolist (i heap)
             (word (position (aref *ph-kind* i) +img-kinds+))
-            (if (gethash i pkg-vectors)
-                (word (length (gethash i pkg-vectors)))
-                (mapc #'item (aref *ph-imm* i))))
+            ;; An emptied package table is present with no items.  Its old
+            ;; length and record still refer to the symbols just dropped.
+            (multiple-value-bind (items present) (gethash i pkg-vectors)
+              (if present
+                  (word (length items))
+                  (mapc #'item (aref *ph-imm* i)))))
           (dotimes (k 4) (word (position :vector +img-kinds+))
             (word (case k (0 4) (1 (length mutables)) (2 0) (3 (length rehash)))))
           ;; the records
@@ -873,7 +876,8 @@ image is loaded, from words written as LEB128 numbers."
                                 (word nil-word)
                                 (item (first rec)))
                             (item (second rec))))
-                         (t (mapc #'item (or (gethash i pkg-vectors) rec))))))))
+                         (t (multiple-value-bind (items present) (gethash i pkg-vectors)
+                              (mapc #'item (if present items rec)))))))))
             (dotimes (i (length *ph-kind*))
               (when (and (< i *ph-nbase*) (plusp (aref *ph-state* i))) (record i)))
             (dolist (i heap) (record i)))
