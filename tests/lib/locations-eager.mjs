@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import {copyFileSync, mkdirSync, rmSync} from 'node:fs';
+import path from 'node:path';
+import {pathToFileURL} from 'node:url';
+const dir = path.resolve(process.argv[2]);
+rmSync(path.join(dir, 'first'), {recursive:true, force:true});
+mkdirSync(path.join(dir, 'second'), {recursive:true});
+const module = path.join(dir, 'second/module.wasm');
+copyFileSync(path.join(dir, 'locations.wasm'), module);
+const api = await import(pathToFileURL(path.join(dir, 'locations.mjs')));
+assert.equal(api.location(), pathToFileURL(module).href);
+assert.equal(api.value(), 7);
+const fresh = await api.create();
+assert.equal(fresh.exports.location(), pathToFileURL(module).href);
+assert.equal(fresh.exports.starts(), 1);
+console.log('lib: eager module locations ok');
