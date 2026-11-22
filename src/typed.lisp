@@ -1124,6 +1124,42 @@ are fields or typed (its own instances are of exactly that type), else NIL."
          (ty-cls ty) (symbolp (ty-cls ty)) (struct-class-type-p (ty-cls ty))
          (struct-class-shape-type (ty-cls ty)))))
 
+;;; The body of a LET that binds such variables is compiled in two arms of
+;;; one test of the shadows: in the arm where none is null the engine's
+;;; type analysis removes each accessor's test and the call of the function
+;;; behind it, so that the fields it has loaded or stored stay known across
+;;; the accesses (with the call on a path that joins after each access,
+;;; none does); the other arm is the same code, where the null shadows take
+;;; the functions.
+(defvar *tested-shadows* nil
+  "((variable . shadow local) ...) of the shadows STRUCT-SHADOW-INIT-CODE made
+with a test of the object, the newest first.")
+(defparameter *shadow-version-max* 4000
+  "The body of a LET (its instructions, counted with their operands) up to
+which it is compiled in two arms for the shadows of its variables.")
+
+(defun code-size (code)
+  (let ((n 0))
+    (labels ((walk (x) (if (consp x) (progn (walk (car x)) (walk (cdr x))) (when x (incf n)))))
+      (walk code))
+    n))
+
+(defun shadow-version-code (shadows inits body-code block-type)
+  "BODY-CODE in two arms: where every variable of SHADOWS (entries of
+*TESTED-SHADOWS*) is of its structure's Wasm type (its shadow is the cast
+object there, not null as far as the engine sees), and otherwise (the
+shadows as INITS, the code of STRUCT-SHADOW-INIT-CODE, sets them)."
+  (let ((done (gensym "SHV")) (slow (gensym "SHNULL")))
+    `((:block ,done ,block-type
+        (:block ,slow nil
+          ,@(loop for (nil sh idx ty) in shadows
+                  append `((:local.get ,idx) (:ref.test ,ty) :i32.eqz (:hint 0) (:br_if ,slow)
+                           (:local.get ,idx) (:ref.cast! ,ty) (:local.set ,sh)))
+          ,@body-code
+          (:br ,done))
+        ,@inits
+        ,@body-code))))
+
 (defun struct-shadow-init-code (lv idx)
   "Code setting the shadow of LV (in local IDX), when it has one."
   (let* ((ty (struct-shadow-type lv))
@@ -1136,9 +1172,11 @@ are fields or typed (its own instances are of exactly that type), else NIL."
         (if from
             ;; (bound to a variable that has one: the variable of a SETF expansion)
             `((:local.get ,from) (:local.set ,sh))
-        `((:local.get ,idx) (:ref.test ,ty)
-          (:if nil (:ref :null ,ty) ((:local.get ,idx) (:ref.cast! ,ty)) ((:ref.null ,ty)))
-          (:local.set ,sh)))))))
+            (let ((code `((:local.get ,idx) (:ref.test ,ty)
+                          (:if nil (:ref :null ,ty) ((:local.get ,idx) (:ref.cast! ,ty)) ((:ref.null ,ty)))
+                          (:local.set ,sh))))
+              (push (list lv sh idx ty code) *tested-shadows*)
+              code))))))
 
 (defun struct-shadow-of (x ty)
   "The shadow local of the variable X (a node) when it is of the Wasm type TY."
