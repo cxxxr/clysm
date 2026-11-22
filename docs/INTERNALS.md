@@ -8784,15 +8784,51 @@ one slot, alternately, two rounds of three runs; times SBCL's):
 (The machine was busy with tests during the second run; the first, in
 parentheses, had the keyword calls not yet fixed.) What calls the runtime
 and other systems much gains (Alexandria, split-sequence, esrap, yason,
-Lem's buffer and redisplay code: 0.6 to 0.9 of the time). **What is slower
-built than loaded**, and not explained: `l-babel` (108-123 ms against
-99-110; its decoders are loops within one function, and a probe of each
-part read `octets-to-string` 48 against 40 ms), `l-ppcre-replace` and
-`a-ppcre-tokens` by 5-15%, `l-syntax-scan` by 5%: code that is closures
-calling closures inside one system, which has nothing to gain from the
-module, in a module of 20000 functions instead of 2000. The functions
-compared were the same Wasm but for the names; the share of small functions
-(V8's inlining budget) is 59-61% in these modules, so it is not that.
+Lem's buffer and redisplay code: 0.6 to 0.9 of the time).
+
+**What was slower built than loaded** (`l-babel`, `l-ppcre-replace`,
+`a-ppcre-tokens`, `l-syntax-scan`, 5-15% in that table) was not the engine
+nor the size of the module (tier-up, the inlining budget, the width of
+function indexes, the worker were each ruled out: the same program in a
+worker or the main thread, with `--no-wasm-inlining`, `--liftoff-only`,
+`--no-liftoff`, kept the difference). It was two things the image's
+compiler does for code it compiles and the whole-program compiler did not:
+* **A function declaimed `inline` with `&optional`, `&key` or `&rest`**
+  was not copied (the copies of a whole program are made of the nodes of
+  functions of required parameters, `src/inline.lisp`; the image copies
+  the source, `inline-expansion-call`). Babel's `decoding-error`
+  (`&optional`) is called in every arm of its decoders: called, its value
+  is any object, and the code point of *every* arm was boxed and tested
+  again. A whole program now keeps the source of such a function of the
+  program (`*program-inline-expansions*`, from `process-defun`, once the
+  runtime is compiled: the runtime's code is as before) and copies it at
+  its calls, on SBCL too: `babel:octets-to-string` of 330 000 characters,
+  300 times, 245 -> 181-202 ms (loaded from fasls: 190-205).
+* **What `compile-file` evaluates when it compiles a file** and
+  `process-toplevel` did not: `defstruct`, `defclass`, `deftype`,
+  `define-condition`, `defsetf`... (`sys::%compile-time-definers`), and a
+  `defconstant` whose value can be computed and is a number, character,
+  symbol or string (`%cf-note-defconstant`). The rest of the file is then
+  compiled with the class (the type tests of a structure's instances) and
+  the constant (cl-ppcre's `(find chr +whitespace-char-string+ :test
+  #'char=)` as comparisons). The build did have them *when `compile-file`
+  had just compiled the same file for its fasl* (its compile-op comes
+  before the load-op that the build hooks), that is in the first build
+  after the image changed, and not in the builds after it: the same
+  program was 14 functions and 169 globals smaller and 13% faster (25%
+  with `--no-wasm-inlining`) in a first build, which is how it was found
+  (a form added *after* the benchmark made it slower: it was the second
+  build). `process-toplevel` now evaluates them for a program built in the
+  image (`*static-compile-time-definers*`, `static-note-defconstant`).
+After both (same method, two rounds): `bench/libs.lisp` 0.78, 0.76
+(loaded 1.00, 1.00), `bench/apps.lisp` 1.08, 1.03 (loaded 1.19, 1.18);
+`l-ppcre-replace` 1.36, 1.42 (loaded 1.41, 1.47), `a-ppcre-tokens` 1.16,
+1.07 (loaded 1.09, 1.07), `l-ppcre-scan` 1.16, 1.25 (1.16, 1.08),
+`l-babel` 1.60, 1.51 (loaded 1.42, 1.46: the decoders are now the same
+code or better, the rest of that benchmark is `concatenate` and
+`make-string` of large strings, where the two differ by which run of the
+process it is), `a-esrap` 1.38, 1.41 (loaded 1.58, 1.66), `a-yason-parse`
+1.11, 1.04 (1.35, 1.36), `l-alexandria-utils` 1.09, 1.06 (1.30, 1.30).
 
 Building: `bench/libs.lisp`'s seven systems (76 files) 11 s, of which the
 runtime 3 s; Lem's benchmark (41 systems, 397 files, with ASDF) 80-105 s

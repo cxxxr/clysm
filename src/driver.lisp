@@ -73,7 +73,8 @@ modules compiled in it import (*LIVE-IMPORTED-HELPERS*).")
         *inlined-into* (make-hash-table :test 'eq)
         *declared-inline* (make-hash-table :test 'eq)
         *declared-ftypes* (make-hash-table :test 'eq)
-        *lvar-lams* (make-hash-table :test 'eq))
+        *lvar-lams* (make-hash-table :test 'eq)
+        *program-inline-expansions* nil)
   (setf (gethash 'clysm-sys::*catch-tags* *specials*) t)
   (init-target-packages)
   (setf *read-package* (find-target-package "COMMON-LISP-USER")))
@@ -286,12 +287,50 @@ that may not be done twice.")
        (return (emit-toplevel-form form env)))
       (clysm-sys::%emit-deferred-macros (return (clysm-sys::%emit-deferred-macros-now env)))
       (t
+       ;; a program built in this image: the definitions that COMPILE-FILE
+       ;; evaluates when it compiles a file are evaluated here too, so that
+       ;; the rest of the file is compiled with them as it would be there
+       ;; (a structure's class for the type tests of its instances, a type,
+       ;; a constant whose value is a number, character, symbol or string
+       ;; for FIND in it, arithmetic on it).  Without this the program was
+       ;; compiled with them only when COMPILE-FILE had just compiled the
+       ;; same file for its fasl (the first build after the image changed),
+       ;; and otherwise ran slower (cl-ppcre 13 to 25%).
+       (when (and (eq *static-image* :user) (symbolp (car form)) (not (env-lookup-fun env (car form))))
+         (cond ((member (car form) *static-compile-time-definers*) (host-eval form))
+               ((eq (car form) 'defconstant) (static-note-defconstant form))))
        (multiple-value-bind (new changed) (if (get (car form) 'clysm-native)
                                               (values form nil)
                                               (cmacroexpand-1 form env))
          (unless changed
            (return (emit-toplevel-form form env)))
          (setf form new))))))
+
+(defparameter *static-compile-time-definers*
+  '(deftype defstruct defclass define-condition defsetf define-setf-expander define-modify-macro
+    define-symbol-macro define-compiler-macro define-method-combination)
+  "The operators of the toplevel forms that COMPILE-FILE evaluates when it
+compiles them (SYS::%COMPILE-TIME-DEFINERS, but those PROCESS-TOPLEVEL
+treats itself).")
+
+(defun static-note-defconstant (form)
+  "FORM, a toplevel DEFCONSTANT of a program built in this image: as
+COMPILE-FILE does (SYS::%CF-NOTE-DEFCONSTANT), a value that can be computed
+now and is a number, character, symbol or string defines the constant in
+the image now."
+  (when (and (consp (cdr form)) (symbolp (second form)) (second form)
+             (not (keywordp (second form))) (consp (cddr form)))
+    (let ((sym (second form)) (value-form (substitute-host-functions (third form))))
+      (call-in-live-state
+       (lambda ()
+         (unless (boundp sym)
+           (multiple-value-bind (v ok)
+               (let ((*package* *read-package*))
+                 (handler-bind ((warning #'muffle-warning))
+                   (ignore-errors (values (eval value-form) t))))
+             (when (and (eq ok t) (not (boundp sym))
+                        (or (numberp v) (characterp v) (symbolp v) (stringp v)))
+               (clysm-sys::%defconstant sym v)))))))))
 
 (defun compile-time-proclaim (d)
   (when (consp d)
@@ -404,6 +443,18 @@ destructuring-bind (defined by the runtime)."
                                               (parse-body (cdddr (second fn-form)))))))
            (fnode (convert (ftype-checked-function sym fn-form) env)))
       (note-batch-defun sym)
+      ;; a function of a whole program declaimed INLINE that the copies of
+      ;; nodes do not serve (&OPTIONAL, &KEY, &REST): its source is kept
+      ;; for its calls (INLINE-EXPANSION-CALL)
+      (when (and *program-inline-expansions* (not *live-mode*) (symbolp name))
+        (if (and (gethash sym *declared-inline*) (eq (car fnode) :lambda)
+                 (not (lam-simple-p (second fnode))) (null (cenv-entries env))
+                 (not (tree-mentions-p (cdddr (second fn-form)) sym)))
+            (let ((src (inline-expansion-source fn-form)))
+              (if src
+                  (setf (gethash sym *program-inline-expansions*) src)
+                  (remhash sym *program-inline-expansions*)))
+            (remhash sym *program-inline-expansions*)))
       (when (and (eq (car fnode) :lambda) (null (lam-free-vars (second fnode))))
         (setf (lam-static-p (second fnode)) t)
         (push (second fnode) (gethash sym *global-defuns*))
@@ -567,6 +618,7 @@ whose functions run after the segment that defines them, src/live.lisp)."
   "Called after the runtime sources have been processed."
   (let ((*read-package* (find-target-package "SYSTEM"))) (emit-primitive-wrappers))
   (setf *runtime-package-names* (loop for k being the hash-values of *host->target-name* collect k))
+  (setf *program-inline-expansions* (make-hash-table :test 'eq))
   (setf *check-declared-integers* t))
 
 (defun emit-primitive-wrappers ()
