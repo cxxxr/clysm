@@ -2012,6 +2012,13 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
   ;; both numbers of the same boxed type?
   '(:local.get 0) '(:ref.test :i31) '(:local.get 1) '(:ref.test :i31) :i32.or
   '(:if nil nil ((:i32.const 0) :return))
+  ;; Keep singles in the small helper that V8 inlines at EQL call sites.
+  ;; Compare bits, as for doubles: signed zeros remain distinct.
+  '(:local.get 0) '(:ref.test :single)
+  '(:if nil nil
+        ((:local.get 1) (:ref.test :single) :i32.eqz (:if nil nil ((:i32.const 0) :return))
+         (:local.get 0) (:ref.cast! :single) (:struct.get :single 0) :i32.reinterpret_f32
+         (:local.get 1) (:ref.cast! :single) (:struct.get :single 0) :i32.reinterpret_f32 :i32.eq :return))
   '(:local.get 0) '(:ref.test :cons) '(:local.get 0) '(:ref.test :symbol) :i32.or
   '(:if nil nil ((:i32.const 0) :return))
   '(:local.get 0) '(:local.get 1) '(:return_call :eql-gen))
@@ -2031,11 +2038,6 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
          (:local.get 1) (:ref.cast! :ibox) (:struct.get :ibox 0) :i64.eq :return))
   '(:local.get 0) '(:ref.test :bignum)
   '(:if nil nil ((:local.get 1) (:ref.test :bignum) :i32.eqz (:if nil nil ((:i32.const 0) :return))))
-  '(:local.get 0) '(:ref.test :single)
-  '(:if nil nil
-        ((:local.get 1) (:ref.test :single) :i32.eqz (:if nil nil ((:i32.const 0) :return))
-         (:local.get 0) (:ref.cast! :single) (:struct.get :single 0) :i32.reinterpret_f32
-         (:local.get 1) (:ref.cast! :single) (:struct.get :single 0) :i32.reinterpret_f32 :i32.eq :return))
   '(:local.get 0) '(:ref.test :ibox) '(:local.get 0) '(:ref.test :bignum) :i32.or '(:local.get 0) '(:ref.test :ratio) :i32.or
   '(:local.get 0) '(:call :complexp) :i32.or :i32.eqz
   '(:if nil nil ((:i32.const 0) :return))
