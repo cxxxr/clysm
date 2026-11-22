@@ -42,7 +42,7 @@
     ;; (the rest of the state of a module, *CODEGEN-STATE-BINDINGS*)
     *fasl-guard-globals* *fasl-guards-set* *fasl-guards-pending* *live-constants* *helpers*
     *current-lam* *catch-clones* *direct-closures*
-    *static-literal-cells* *static-pending-forms* *static-literal-counter*
+    *static-literal-cells* *static-cell-conses* *static-pending-forms* *static-literal-counter*
     *program-inline-expansions* *inline-expansion-depth*
     ;; (the mode)
     *static-state-p* *static-image* *live-mode* *live-packages* *image-packages*
@@ -117,7 +117,8 @@ which the compiler on SBCL makes)."
                  *fasl-guards-set* (make-hash-table :test 'equal) *fasl-guards-pending* nil
                  *live-constants* nil *current-lam* nil *catch-clones* (make-hash-table :test 'equal)
                  *direct-closures* nil
-                 *static-literal-cells* (make-hash-table :test 'eq) *static-pending-forms* nil
+                 *static-literal-cells* (make-hash-table :test 'eq)
+                 *static-cell-conses* (make-hash-table :test 'eq) *static-pending-forms* nil
                  *static-literal-counter* 0
                  clysm-sys::*gf-unit* nil clysm-sys::*proclaimed-safety* 1)
            (reset-compiler)
