@@ -21,6 +21,8 @@
 //   import    the function that (js:import "specifier") calls (by default import())
 //   debug     the bytes of the names and places of the module's functions
 //             (NAME.wasm.debug), for stack traces, when the module has none
+//   location  the URL the module is from, which JS:LIBRARY-LOCATION gives (none
+//             by default: an embedded library's module is in its own modules)
 //   classes   the classes of JS:DEFINE-CLASS, by name, that the modules of a
 //             lazy library made before loading it (they get their functions)
 import { makeImports, installSourceMap } from '../common.mjs';
@@ -74,7 +76,8 @@ export function loadSync(source, options = {}) {
   const instance = new WebAssembly.Instance(module, imports);
   state.instance = instance;
   const exportsObject = {};
-  const library = { exports: {}, declarations: [], classes: {}, options: {}, made: options.classes ?? {} };
+  const library = { exports: {}, declarations: [], classes: {}, options: {}, made: options.classes ?? {},
+                    location: options.location ?? null };
   const saved = globalThis.__clysm_exports, savedLibrary = globalThis.__clysm_library;
   globalThis.__clysm_exports = exportsObject;
   globalThis.__clysm_library = library;
