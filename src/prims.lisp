@@ -3892,6 +3892,41 @@ ASCII letter)."
        (:local.get i) (:i32.const 1) :i32.add (:local.set i)
        (:br again)))
   '(:local.get h))
+;;; Hash the first four elements of a simple vector, exactly as the Lisp
+;;; function. Character vectors (including empty vectors) must hash like
+;;; strings, so they retain the general vector path.
+(defhelper :equalp-vector-hash :ei-e ((v (:ref :null :vector)) (n :i32) (h :i32) (i :i32) (e :eqref) (r :eqref) (x :i32))
+  '(:local.get 0) '(:ref.cast! :vector) '(:local.tee v) :array.len '(:local.tee n) '(:local.set h)
+  `(:block slow nil
+     (:local.get 1) (:i32.const 0) :i32.le_s (:br_if slow)
+     (:local.get n) :i32.eqz (:br_if slow)
+     (:local.get v) (:i32.const 0) (:array.get :vector) (:local.tee e) (:ref.test :i31)
+     (:if nil nil ((:local.get e) (:ref.cast! :i31) :i31.get_s (:i32.const ,+char-tag+) :i32.ge_s (:br_if slow)))
+     (:local.get n) (:i32.const 4) :i32.gt_u (:if nil nil ((:i32.const 4) (:local.set n)))
+     (:loop elements nil
+       (:local.get i) (:local.get n) :i32.ge_u (:if nil nil ((:local.get h) :ref.i31 :return))
+       (:local.get v) (:local.get i) (:array.get :vector) (:local.set e)
+       (:block hashed nil
+         (:local.get e) (:ref.test :i31)
+         (:if nil nil
+              ((:local.get e) (:ref.cast! :i31) :i31.get_s (:local.tee x) (:i32.const ,+char-tag+) :i32.lt_s
+               (:if nil nil ((:local.get x) (:i32.const 536870911) :i32.and (:local.set x) (:br hashed)))))
+         (:local.get e) (:ref.test :symbol)
+         (:if nil nil ((:local.get e) (:ref.cast! :symbol) (:struct.get :symbol 5) (:local.set x) (:br hashed)))
+         (:local.get e) (:ref.test :string)
+         (:if nil nil ((:local.get e) (:call :equalp-string-hash) (:local.tee x) (:i32.const 0) :i32.ge_s (:br_if hashed)))
+         (:local.get e) (:ref.test :vector)
+         (:if nil nil
+              ((:local.get e) (:local.get 1) (:i32.const 1) :i32.sub (:call :equalp-vector-hash) (:local.set r))
+              ((:local.get e) (:local.get 1) (:i32.const 1) :i32.sub :ref.i31
+               ,@(lisp-call-instrs 'clysm-sys::%equalp-hash 2) (:local.set r)))
+         (:local.get r) :ref.is_null (:if nil nil ((:ref.null :eq) :return))
+         (:local.get r) (:ref.cast! :i31) :i31.get_s (:local.set x))
+       ,@(hash-mix-code 'h '((:local.get x)))
+       (:local.get i) (:i32.const 1) :i32.add (:local.set i) (:br elements)))
+  '(:local.get 0) '(:local.get 1) :ref.i31 (lisp-call-instrs 'clysm-sys::%equalp-vector-hash 2))
+(defprim clysm-sys::%equalp-simple-vector-hash (x depth) :value
+  `(,@x ,@(idx-code depth) (:call :equalp-vector-hash)))
 ;;; The index of the entry of the simple string KEY of hash HASH
 ;;; (:EQUALP-STRING-HASH) in the EQUALP table whose slot vector is V, or -1;
 ;;; -2 when a key of the same hash is not a simple string or has a
@@ -8382,6 +8417,42 @@ baseline compiler, which compiles IMAGE_LOAD, does not inline calls."
 ;; (runtime/types.lisp %EQUALP-INSTANCES then compares them slot by slot).
 ;; The count of the fields selects where the comparisons start: field N-1,
 ;; then down to field 0.
+ ;;; Common unequal structure fields, kept in one helper rather than copied
+;;; into every arm of :SINST-EQUALP. Only fixnums are converted to double:
+;;; large integers and ratios retain EQUALP's exact numeric comparison.
+(defun equalp-small-number-code (x d fail)
+  `((:block number nil
+      (:local.get ,x) (:ref.test :i31)
+      (:if nil nil
+           ((:local.get ,x) (:ref.cast! :i31) :i31.get_s (:local.tee c1)
+            (:i32.const ,+char-tag+) :i32.ge_s (:br_if ,fail)
+            (:local.get c1) :f64.convert_i32_s (:local.set ,d) (:br number)))
+      (:local.get ,x) (:ref.test :double)
+      (:if nil nil ((:local.get ,x) (:ref.cast! :double) (:struct.get :double 0) (:local.set ,d) (:br number)))
+      (:local.get ,x) (:ref.test :single) :i32.eqz (:br_if ,fail)
+      (:local.get ,x) (:ref.cast! :single) (:struct.get :single 0) :f64.promote_f32 (:local.set ,d))))
+(defhelper :equalp-field :ee-e ((da :f64) (db :f64) (c1 :i32) (c2 :i32) (i :i32) (n :i32)
+                               (a (:ref :null :string)) (b (:ref :null :string)))
+  `(:block slow nil
+     (:block notnumbers nil
+       ,@(equalp-small-number-code 0 'da 'notnumbers)
+       ,@(equalp-small-number-code 1 'db 'notnumbers)
+       (:local.get da) (:local.get db) :f64.eq
+       (:if nil :eqref ,(t-code) ,(nil-code)) :return)
+     (:local.get 0) (:ref.test :string) (:local.get 1) (:ref.test :string) :i32.and :i32.eqz (:br_if slow)
+     (:local.get 0) (:ref.cast! :string) (:local.tee a) :array.len (:local.set n)
+     (:local.get 1) (:ref.cast! :string) (:local.tee b) :array.len (:local.get n) :i32.ne
+     (:if nil nil (,@(nil-code) :return))
+     (:loop chars nil
+       (:local.get i) (:local.get n) :i32.ge_u (:if nil nil (,@(t-code) :return))
+       (:local.get a) (:local.get i) (:array.get :string) (:local.tee c1)
+       (:local.get b) (:local.get i) (:array.get :string) (:local.tee c2) :i32.ne
+       (:if nil nil
+            ((:local.get c1) (:local.get c2) :i32.or (:i32.const 128) :i32.ge_u (:br_if slow)
+             ,@(ascii-upcase-code 'c1) ,@(ascii-upcase-code 'c2)
+             (:local.get c1) (:local.get c2) :i32.ne (:if nil nil (,@(nil-code) :return))))
+       (:local.get i) (:i32.const 1) :i32.add (:local.set i) (:br chars)))
+  '(:local.get 0) '(:local.get 1) (lisp-call-instrs 'equalp 2))
 (defhelper :sinst-equalp :ee-e ((n :i32) (x :eqref) (y :eqref) (r :eqref) (sv (:ref :null :vector)))
   '(:local.get 0) '(:ref.test :sfield) '(:local.get 1) '(:ref.test :sfield) :i32.and :i32.eqz
   '(:if nil nil ((:i32.const 0) :ref.i31 :return))
@@ -8422,7 +8493,7 @@ baseline compiler, which compiles IMAGE_LOAD, does not inline calls."
                             (:local.get 1) (:ref.cast ,ty) (:struct.get ,ty ,(sinst-field j)) (:local.tee y)
                             :ref.eq :i32.eqz
                             (:if nil nil
-                                 ((:local.get x) (:local.get y) ,@(lisp-call-instrs 'equalp 2) (:local.tee r)
+                                 ((:local.get x) (:local.get y) (:call :equalp-field) (:local.tee r)
                                   :ref.is_null (:if nil nil ((:ref.null :eq) :return))
                                   (:local.get r) ,@(nil-code) :ref.eq
                                   (:if nil nil (,@(nil-code) :return))))))))

@@ -6945,6 +6945,19 @@ What makes the code fast:
   iteration and package tests pass. The first `v-hash-iterate` measurement
   is 10 ms: no demonstrated speedup yet; repeated comparisons follow below.
 
+* **EQUALP structure fields and vector hashes in Wasm (2026-11-23).**
+  The structure helper calls one shared field helper for fixnums, single
+  and double floats, and ASCII strings. Large integers, ratios, Unicode
+  case differences and other objects use ordinary EQUALP. The vector hash
+  loop handles fixnums, symbols, ASCII strings and nested simple vectors;
+  empty and character-leading vectors keep the string-compatible path.
+  Three alternating runs of the same precompiled probes on one slot:
+  structure comparison 253 -> 204 ms (best), vector stores 18 -> 17 ms,
+  vector lookups 20 -> 20 ms. The latter changes are within noise.
+  Four equality/hash regression files pass, including exact large integer
+  comparisons, Unicode and vector/string keys. The probe module shrinks
+  3,082 bytes because field fallback code is shared.
+
 ### Declared code, and SBCL at its best policy
 
 The files above are undeclared code at SBCL's default policy, where SBCL
