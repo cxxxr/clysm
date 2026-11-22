@@ -291,7 +291,11 @@ that UPGRADED-ARRAY-ELEMENT-TYPE makes it T."
     (:eeeee-e   (:func (:eqref :eqref :eqref :eqref :eqref) (:eqref)))
     ;; heap images: a function's index in the table of functions
     (:fr-i      (:func ((:ref :null :func)) (:i32)))
-    (:v-l       (:func () (:i64)))))
+    (:v-l       (:func () (:i64)))
+    ;; an integer of a sign and two halves of 64 bits (:wide-int)
+    (:ill-e     (:func (:i32 :i64 :i64) (:eqref)))
+    ;; the low 64 bits of an integer, and whether it is none (:low-i64)
+    (:e-li      (:func (:eqref) (:i64 :i32)))))
 
 ;;; Structures (DEFSTRUCT, without :TYPE) of 1 to +STRUCT-INLINE-MAX+ slots
 ;;; keep their slots in fields of their own: a structure of K slots is a

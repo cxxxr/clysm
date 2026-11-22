@@ -4716,6 +4716,139 @@ What makes the code fast:
   * **`p-calc`** (1.2) is `intern` of one-character strings (20%),
     `find-package` of `:keyword` at each call (5%), `sxhash` and the write
     barrier of its token list; not arithmetic.
+* **The bignum kernels in the linear memory; integers within 128 bits;
+  trees under a mask of 64 bits** (2026-11-23). Probes of each operation
+  on operands SBCL cannot fold (special variables; ns a call, the same
+  slot; `x` is times SBCL):
+
+  | operation | before | after | SBCL |
+  |---|---|---|---|
+  | product, 7900 by 8400 bits | 27300 (3.3x) | 12900 (1.45x) | 8900 |
+  | product, 2045 by 2044 bits | 2440 (4.3x) | 960 (1.6x) | 610 |
+  | product, 508 by 506 bits | 195 (3.9x) | 135 (2.6x) | 53 |
+  | product, 100 000 bits each | 1 656 000 (1.34x) | 844 000 (0.64x) | 1 312 000 |
+  | square, 7900 bits | 15900 (1.9x) | 6470 (0.73x) | 8900 |
+  | `expt` of 3 to 2000 | 1400 (1.9x) | 950 (1.2x) | 790 |
+  | `floor`, 7900 by 4180 bits | 11960 (2.9x) | 10500 (2.3x) | 4500 |
+  | `floor`, 2045 by 508 bits | 854 (2.0x) | 778 (1.7x) | 465 |
+  | `isqrt` of 7900 bits | 50800 (8.2x) | 11960 (1.7x) | 6960 |
+  | `isqrt` of 10^400 | 3540 (4.6x) | 3170 (3.8x) | 840 |
+  | sum and difference of 96 bits | 28 (1.7x) | 23 (1.4x) | 16.5 |
+  | a sum of 62-bit steps beyond 64 bits | 18.4 (3.0x) | 12.3 (2.05x) | 6.0 |
+  | FNV-1a of 64 bits, a step | 70 (38x) | 1.9 (1.0x) | 1.9 |
+  | xorshift64, a step (three updates) | 122 (66x) | 13 (7x) | 1.9 |
+  | splitmix64, a step | 237 (8.7x) | 24 (0.85x) | 28 |
+  | `logand` and `logxor` of 7900 bits | 702 (4.6x) | 240 (1.3x) | 183 |
+
+  Not changed by it, and still behind: a sum of two bignums (1.7-1.9x: 9
+  instructions a 32-bit digit, three of them bounds checks), a product by
+  a fixnum (1.8-2.0x), products of 3 to 16 digits (2.5-3.5x: the copy
+  into the memory and the allocation count there), `floor` of small
+  bignums (1.5-2.5x).
+
+  * **Products** (`:mag-mul`). V8 13.6 compiles Wasm SIMD: `i64x2.extmul_
+    low/high_i32x4_u` is `vpmuludq`, two 32x32->64 products an
+    instruction. The helper copies the digits of both operands into the
+    linear memory (the scratch the strings cross to the host through; A
+    from 0, B reversed after it, four zero digits after each), where a
+    load has no bounds check and takes four digits, and computes the
+    product by columns: a step multiplies four digits of A by four of B
+    into `VT`, the sum of the products modulo 2^64, and `VH`, the sum of
+    their high halves; the sum of the low halves is `VT - 2^32 VH`, so
+    nothing is carried from product to product and a column of any length
+    is exact (the high halves sum below 2^64 for 2^32 digits). A step may
+    run three digits past the column: one of the two digits is then a
+    zero of the padding. A square takes each cross product once (steps of
+    four while they fit, then single products) and doubles the two sums.
+    The inner loop is 18 instructions for four pairs of digits (a pair
+    took about 0.5 ns in the arrays, each access with its bounds check). Operands of up to four digits
+    stay row by row in the arrays. Karatsuba's step (Lisp code on
+    integers) now starts at 200 digits for a product and 400 for a square
+    (80 before: measured at 100 to 4096 digits with 80, 128, 200 and 300;
+    below 200 the columns win, a square's columns up to 400).
+  * **Division** (`:mag-divmod`, Knuth D). The shifted operands are in
+    the linear memory too; the pass that subtracts `qhat * v` takes two
+    digits a step: two products, their 64 bits taken from 64 bits of the
+    dividend, with the carry of the products and the borrow of the
+    differences as two chains (in one chain, the first version, the pass
+    was slower than the loop of single digits in the arrays: `floor` of
+    64 by 32 digits 961 -> 1083 ns; with two 824). The remainder of the
+    estimate is a product, not a second division. SBCL divides 64-bit
+    digits: 2.3x remains for long operands.
+  * **`isqrt`** of an integer beyond 64 bits is Zimmermann's recursion
+    (the root and remainder of the top half, one division of half the
+    size by twice that root, one square; digits of two bits so that every
+    operand is normalized), where Newton's iteration from half the bits
+    took two divisions of the full size.
+  * **Integers within 128 bits.** `:big-add` first decodes both operands
+    (a fixnum, a box, a bignum of two to four digits) into a sign and two
+    64-bit halves and adds or subtracts them without a loop, a comparison
+    of magnitudes or a temporary array; the result is made at its length
+    by one `array.new_fixed` (`:wide-int`). `:mul-wide` makes its product
+    that way; `:big-mul` takes two magnitudes below 2^64 (a box times a
+    bignum of two digits) to one 64x64 product; `logand`/`logior`/`logxor`
+    of two such integers that are not negative are two operations on the
+    halves, and `ash` of one whose result stays within 128 bits two
+    shifts (they went through `%ash2`, `%logand2` and the loops over
+    digits: a 64-bit generator's step was 60-120 ns). `a-sum-overflow`
+    1.33 -> 1.2.
+  * **Trees under a mask of 64 bits.** The fused arithmetic computed
+    modulo 2^64 under a `logand` with an operand within [0, 2^63); a mask
+    of `#xFFFFFFFFFFFFFFFF`, what 64-bit hashes and generators use, was
+    outside it and every step made bignums (FNV-1a 38 times SBCL,
+    xorshift 66). Now a `logand` with an operand within [0, 2^64), and a
+    `logior` or `logxor` of two such operands, are computed on the low 64
+    bits of their operands, whatever integers those are (`:low-i64`: the
+    low bits of a box or of a bignum, in two's complement), and a shift
+    to the right of an operand within [0, 2^64) is a logical shift. The
+    result is an unsigned i64: at the root of the tree it is made an
+    integer by `:u64-int` (a bignum of two digits from 2^63); an
+    accumulator keeps it in its i64 below 2^63 and as that integer in its
+    eqref local from there (so half of the steps of a hash still allocate
+    and decode: xorshift64 is 7 times SBCL, which keeps the word in a
+    register); inside a tree that needs the value as a signed i64, a
+    result from 2^63 leaves for the generic code. The type inference
+    widens a loop variable's upper bound to 2^64 - 1 after 2^63 - 1, so
+    that the variable of such a loop is known to be within 64 bits.
+    Next: a third state of the accumulator's pair of locals (an unsigned
+    i64 in the i64 local under a mark in the eqref one), which would
+    remove the allocation.
+  * **Logical operations of two long integers that are not negative**
+    are a loop of one operation a digit over the digits both have, after
+    an `array.copy` of the longer one's for `logior` and `logxor` (the
+    general loop converts each digit from and to two's complement and
+    selects the operation at each digit).
+  * **Tried and not kept: two digits a step in the sum of two bignums and
+    in the product by a fixnum**, as one 64-bit addition whose carry is a
+    comparison (the carry then passes through three instructions for two
+    digits instead of two for each). Slower: a sum of 7900 bits 156 ->
+    206 ns, a product of 7900 bits by a fixnum 160 -> 202, the factorial
+    of 2000 352 -> 469 us, the Fibonacci sums 82 -> 100 us. The loops are
+    bound by their instructions (the four loads and two stores with their
+    bounds checks stay, and the digits are joined and split besides), not
+    by the carry.
+  * **Not done**: sums of long bignums and products by a fixnum
+    (`b-bignum`, the Fibonacci sums of `p-bignum-misc`) are as they were.
+    In the linear memory they would have no bounds checks, but the digits
+    live in GC arrays and there is no bulk copy between an array and the
+    memory: copying in and out is two checked accesses a digit, what the
+    loops cost now.
+  * **The benchmark files** (two interleaved rounds, base and new on one
+    slot): `a-sum-overflow` 1.52 -> 1.32; `b-bignum`, `b-ratio`,
+    `p-bignum-misc`, `f-generators` within the noise (their time is in
+    the sums, the products by a fixnum, the gcds and the closures);
+    `suite` 0.991 of its time, `arith` 0.960, `holdout` 0.972, `programs`
+    1.005, `functional` 1.03 (items of 3 to 6 ms). The module of one
+    export 907,414 -> 910,637 bytes, the REPL image 8,596,136 ->
+    8,619,050. Tests: `tests/cases/bignum-kernels.lisp`,
+    `wide-int-sums.lisp`, `wide-int-ops.lisp`, `u64-ops.lisp`,
+    `u64-trees.lisp` (hashes of results against SBCL).
+  * **Large vectors** (`p-double-vector`, `p-u32-vector`,
+    `v-seq-copying`): measured again, not changed. `(make-array n
+    :element-type 'double-float)` of 16 000 elements (128 KB less a
+    header) takes 5 us, of 20 000 30 us (SBCL 4 and 4), of 200 000 235
+    (SBCL 50): the step is V8's large-object threshold, and the
+    benchmarks make their one or two vectors a run and nothing twice.
 * **Division of floats** (`floor ceiling truncate round`, the `f` versions,
   `mod rem`) computes what SBCL does, in the inline code, the helper
   `:divmod` and `%float-divmod` alike: the float quotient rounded for the
@@ -5701,8 +5834,9 @@ What makes the code fast:
 * **Numbers**: fixnum, 64-bit, single and double arithmetic and comparisons
   in Wasm helpers; `floor` and friends, `isqrt`, `gcd`, `ldb`, the
   irrational functions as primitives; bignum kernels in Wasm: products by
-  columns (two accumulators, no carry chain from product to product; a
-  square takes each cross product once), Knuth's division, Lehmer's gcd
+  columns, four pairs of digits a step with SIMD on copies of the digits
+  in the linear memory (no carry chain from product to product; a
+  square takes each cross product once), Knuth's division there, Lehmer's gcd
   (one pass over the digits per 30 bits of quotients, as CPython's), the
   remainder by a divisor below 2^32 without a quotient, decimal printing by
   10^9 a pass straight into the string; `expt` of an integer from the top

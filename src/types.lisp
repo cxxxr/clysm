@@ -953,7 +953,7 @@ forms ending in one."
         (t (every #'ty-equal a b))))
 
 (defparameter *widen-lo* (list 0 -1 +most-negative-fixnum+ (- (expt 2 31)) (- (expt 2 63))))
-(defparameter *widen-hi* (list 0 +most-positive-fixnum+ (1- (expt 2 31)) (1- (expt 2 63))))
+(defparameter *widen-hi* (list 0 +most-positive-fixnum+ (1- (expt 2 31)) (1- (expt 2 63)) (1- (expt 2 64))))
 
 (defun widen-ty (old new)
   (let ((u (ty-union old new)))

@@ -346,8 +346,6 @@
                  (progn (%set-64vec-halves v i (logand (ash x -32) 4294967295) (logand x 4294967295)) x)
                  (%type-error x et))))))
 
-(defun %u64-from-halves (hi lo) (+ (ash hi 32) lo))
-
 (defun %element-type-code (et)
   "The storage kind for the upgraded element type ET."
   (cond ((eq et t) 0)
