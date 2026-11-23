@@ -2278,7 +2278,9 @@ JavaScript written for it (`tests/lib/package.lisp`):
   JavaScript has it, and a function of `JS:RAW-FUNCTION` given to
   JavaScript (a callback, a listener) is given its arguments so: a text
   handed on, or read a part of (`(js:call-raw text "slice" start end)`),
-  stays JavaScript's.
+  stays JavaScript's. Such a function is told by its name (the symbol
+  `%RAW-JS-FUNCTION`, in the closure's name slot), not kept in a table:
+  one made for each event goes when JavaScript lets it go.
 - `JS:DECLARE-TYPES` adds declarations (interfaces, types) to the `.d.ts`
   of the library or of an entry; `:type` of an export or a class is its own
   declaration there.

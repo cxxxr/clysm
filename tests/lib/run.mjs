@@ -20,6 +20,26 @@ assert.throws(() => deep(100000000), RangeError);
 assert.equal(deep(10), 10);
 // a non-local exit and an error from Lisp, through a JavaScript frame
 assert.deepEqual(lib.default.exports.exitThrough((g) => g()), [7, 9]);
+// a raw function gets its arguments unconverted, and is let go when unused
+assert.equal(lib.default.exports.rawCallback()(null), 'raw');
+{
+  const v8 = await import('node:v8');
+  const vm = await import('node:vm');
+  v8.setFlagsFromString('--expose-gc');
+  const gc = vm.runInNewContext('gc');
+  const refs = [];
+  for (let i = 0; i < 20; i++) {
+    const object = { i };
+    refs.push(new WeakRef(object));
+    assert.equal(lib.default.exports.rawHolding(object)(), 'object');
+  }
+  for (let i = 0; i < 10 && refs.filter((r) => r.deref() !== undefined).length > 1; i++) {
+    await new Promise((r) => setTimeout(r, 0));
+    gc();
+  }
+  // (the last one made may still be held by the engine for a while)
+  assert.ok(refs.filter((r) => r.deref() !== undefined).length <= 1, 'raw functions are not kept');
+}
 
 assert.throws(() => fails(42), (e) => e.name === 'LispError' && /cannot handle 42/.test(e.message)
                                   && /^LispError: cannot handle 42\n\s+at (CHECK|FAILS) \(tests\/lib\/demo\.lisp:1[67]\)/.test(e.stack));

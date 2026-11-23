@@ -313,9 +313,6 @@ of the place where it was signalled), in the object that tells the host to throw
               (%condition-type-string condition)
               (%js-wrap-lisp condition)))
 
-(defvar *js-raw-functions* nil
-  "The functions given their arguments as JavaScript has them (JS:EXPORT's
-:RAW): an EQ table of them, made with the first.")
 
 (defun js:raw-function (function)
   "A function that calls FUNCTION, to give JavaScript (an argument of
@@ -327,15 +324,15 @@ JavaScript, still has its arguments converted."
 (defun %js-raw-function (function)
   "A function of its own that calls FUNCTION, and that JavaScript gives its
 arguments unconverted (FUNCTION itself, exported or given elsewhere, is not)."
+  ;; It is told by its name, the symbol %RAW-JS-FUNCTION: no table holds it,
+  ;; and it goes when JavaScript lets it go (a callback made for each event).
   (let ((raw (lambda (&rest arguments) (apply function arguments))))
-    (setf (gethash raw (or *js-raw-functions*
-                           (setq *js-raw-functions* (make-hash-table :test 'eq))))
-          t)
+    (%set-closure-name raw '%raw-js-function)
     raw))
 
 (defun %js-run (closure args async)
   (let* ((f (%js-unwrap-lisp closure))
-         (raw (and *js-raw-functions* (gethash f *js-raw-functions*)))
+         (raw (eq (%closure-name f) '%raw-js-function))
          (n (js:to-lisp (%js-get args (%js-string "length"))))
          (lisp-args (let ((r nil))
                       (dotimes (i n (nreverse r))
