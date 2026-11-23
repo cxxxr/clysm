@@ -165,3 +165,17 @@ if [ "$size" -gt "$max" ]; then
   exit 1
 fi
 echo "lib: the module of one export is $size bytes (at most $max)"
+# the same with --shake-symbols, which leaves out more than --shake
+bin/clysm library --shake-symbols tests/lib/one.lisp -o build/lib-test/one-symbols.wasm > build/lib-test.log 2>&1 \
+  || { cat build/lib-test.log; exit 1; }
+size=$(wc -c < build/lib-test/one-symbols.wasm); max=$(cat tests/lib/one-symbols.max-bytes)
+if [ "$size" -gt "$max" ]; then
+  echo "lib: the module of one export with --shake-symbols is $size bytes, more than $max (tests/lib/one-symbols.max-bytes);"
+  echo "  bin/clysm library --shake-symbols --shake-why REPORT tests/lib/one.lisp -o OUT.wasm says what keeps each function"
+  exit 1
+fi
+shaken=$(wc -c < build/lib-test/one.wasm)
+if [ "$size" -gt "$shaken" ]; then
+  echo "lib: the module of one export is larger with --shake-symbols ($size bytes) than with --shake ($shaken)"; exit 1
+fi
+echo "lib: the module of one export with --shake-symbols is $size bytes (at most $max)"
