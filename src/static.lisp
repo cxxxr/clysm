@@ -30,7 +30,7 @@
 
 (defparameter *static-state-variables*
   '(;; (what RESET-COMPILER sets)
-    *check-declared-integers* *macros* *symbol-macros* *specials* *constants* *var-types* *notinline*
+    *check-declared-integers* *macros* *symbol-macros* *specials* *constants* *var-types* *notinline* *not-copied*
     *compiler-macros* *global-defuns* *lam-counter* *warnings* *toplevel-lams* *current-toplevel*
     *toplevel-nodes* *toplevel-weight* *symbol-globals* *symbol-global-table* *const-globals*
     *const-table* *const-string-table* *data-strings* *const-counter* *closure-globals*
