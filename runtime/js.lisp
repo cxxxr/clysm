@@ -324,15 +324,15 @@ JavaScript, still has its arguments converted."
 (defun %js-raw-function (function)
   "A function of its own that calls FUNCTION, and that JavaScript gives its
 arguments unconverted (FUNCTION itself, exported or given elsewhere, is not)."
-  ;; It is told by its name, the symbol %RAW-JS-FUNCTION: no table holds it,
+  ;; It is told by its name, the symbol %RAW-JS-FUNCTION-MARK: no table holds it,
   ;; and it goes when JavaScript lets it go (a callback made for each event).
   (let ((raw (lambda (&rest arguments) (apply function arguments))))
-    (%set-closure-name raw '%raw-js-function)
+    (%set-closure-name raw '%raw-js-function-mark)
     raw))
 
 (defun %js-run (closure args async)
   (let* ((f (%js-unwrap-lisp closure))
-         (raw (eq (%closure-name f) '%raw-js-function))
+         (raw (eq (%closure-name f) '%raw-js-function-mark))
          (n (js:to-lisp (%js-get args (%js-string "length"))))
          (lisp-args (let ((r nil))
                       (dotimes (i n (nreverse r))

@@ -2279,8 +2279,9 @@ JavaScript written for it (`tests/lib/package.lisp`):
   JavaScript (a callback, a listener) is given its arguments so: a text
   handed on, or read a part of (`(js:call-raw text "slice" start end)`),
   stays JavaScript's. Such a function is told by its name (the symbol
-  `%RAW-JS-FUNCTION`, in the closure's name slot), not kept in a table:
-  one made for each event goes when JavaScript lets it go.
+  `%RAW-JS-FUNCTION-MARK`, in the closure's name slot), not kept in a table:
+  one made for each event goes when JavaScript lets it go. (So it prints
+  as `#<FUNCTION CLYSM-SYS::%RAW-JS-FUNCTION-MARK>`.)
 - `JS:DECLARE-TYPES` adds declarations (interfaces, types) to the `.d.ts`
   of the library or of an entry; `:type` of an export or a class is its own
   declaration there.

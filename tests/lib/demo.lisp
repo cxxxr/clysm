@@ -38,7 +38,7 @@
 (js:export "fails" #'fails)
 (js:export "exitThrough" (lambda (f) (coerce (exit-through f) 'vector)))
 ;; a raw callback gets null as JavaScript has it; one that holds OBJECT
-;; (the host's WeakSet of raw functions does not keep it, js.lisp)
+;; (no table keeps a raw function: it is told by its name, js.lisp)
 (js:export "rawCallback" (lambda () (js:raw-function (lambda (x) (if (null x) "converted" "raw")))))
 (js:export "rawHolding" (lambda (object) (js:raw-function (lambda () (js:typeof object)))))
 (js:export "upcaseAll" #'upcase-all :type "(items: string[]) => string[]")
