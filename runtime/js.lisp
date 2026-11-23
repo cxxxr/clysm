@@ -198,16 +198,23 @@ called from JavaScript), otherwise a JS:JS-ERROR.  Otherwise R, unconverted."
   `(%js-cell-name (load-time-value (%js-name-cell ,string))))
 
 (declaim (not-copied %js-get-named %js-get-raw-named %js-set-named))
-(defun %js-get-named (object cell) (js:get object (%js-cell-name cell)))
-(defun %js-get-raw-named (object cell) (js:get-raw object (%js-cell-name cell)))
-(defun %js-set-named (object cell value) (js:set object (%js-cell-name cell) value))
+;; (the test of the cell in each: one call on the way of every access)
+(defun %js-get-named (object cell) (js:get object (or (cdr cell) (%js-name-fill cell))))
+(defun %js-get-raw-named (object cell) (js:get-raw object (or (cdr cell) (%js-name-fill cell))))
+(defun %js-set-named (object cell value) (js:set object (or (cdr cell) (%js-name-fill cell)) value))
 
 ;; (a literal name: one direct call, of the object and the name's cell)
 (define-compiler-macro js:get (&whole form object key)
   (if (stringp key) `(%js-get-named ,object (load-time-value (%js-name-cell ,key))) form))
 
 (define-compiler-macro js:set (&whole form object key value)
-  (if (stringp key) `(%js-set-named ,object (load-time-value (%js-name-cell ,key)) ,value) form))
+  ;; (the value, as JS:SET gives it, seen by the type inference)
+  (if (stringp key)
+      (let ((o (gensym "O")) (v (gensym "V")))
+        `(let* ((,o ,object) (,v ,value))
+           (%js-set-named ,o (load-time-value (%js-name-cell ,key)) ,v)
+           ,v))
+      form))
 
 (define-compiler-macro js:call (&whole form object method &rest args)
   (if (stringp method) `(js:call ,object (%js-literal-name ,method) ,@args) form))

@@ -57,7 +57,12 @@ functions made from it are, for the clysm.sources section (stack traces).")
 (defvar *not-copied* (make-hash-table :test 'eq)
   "Functions proclaimed CLYSM-SYS::NOT-COPIED: called directly, as other
 known functions are, but never copied into their callers (unlike NOTINLINE,
-which also calls them through their symbols).")
+which also calls them through their symbols).  The typed, raw and catch
+clones of a function, one per signature and not per call, are still made.
+In the image the declaration is the symbol's property %NOT-COPIED.")
+(defun not-copied-p (sym)
+  "SYM is proclaimed CLYSM-SYS::NOT-COPIED (in the compilation, or in the image)."
+  (or (gethash sym *not-copied*) (and (symbolp sym) (get sym 'clysm-sys::%not-copied))))
 (defvar *redefinable-functions* nil
   "True while compiling files whose functions may be redefined in the running
 image: they are all NOTINLINE, so their callers go through the function cell.")
@@ -1055,7 +1060,7 @@ when it may be copied into callers compiled later, else NIL."
                   ;; unless it has a loop)
                   *current-lam* (or (lam-parent *current-lam*) *live-toplevel-loop-p*)
                   (not (gethash op *notinline*)) (not (member op *local-notinline*))
-                  (not (get op 'clysm-sys::%notinline))
+                  (not (get op 'clysm-sys::%notinline)) (not (not-copied-p op))
                   ;; (not a function that signals, SYS::%TYPE-ERROR: its
                   ;; call is on a path not expected to be taken, where a
                   ;; copy, ERROR with its arguments, only makes the code
@@ -1209,7 +1214,7 @@ the code point of every arm was boxed).")
   "FORM, a call of a function with an inline expansion, as a copy of its body, or NIL."
   (let* ((op (car form))
          (src (and (symbolp op) (< *inline-expansion-depth* 3)
-                   (not (member op *local-notinline*))
+                   (not (member op *local-notinline*)) (not (not-copied-p op))
                    (if *live-mode*
                        (and (or (member op *local-inline*)
                                 (and (not (gethash op *notinline*)) (not (get op 'clysm-sys::%notinline))))

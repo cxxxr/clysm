@@ -2038,6 +2038,16 @@ macros of `js:get`, `js:set`, `js:call` and `js:global`), and kept in a cell
 of that name: a heap image cannot hold JavaScript strings, so `save-image`
 empties the cells and the image started from the file makes each name again
 when it first uses it.
+Where it is written there is one direct call: `js:get`, `js:get-raw` and
+`js:set` call `%js-get-named` (and the others) of the object and the cell,
+and `js:call`'s method is `%js-cell-name` of the cell. These functions are
+proclaimed `sys::not-copied`: called directly, as a known function is, but
+never copied into their callers, unlike `notinline`, which calls through the
+symbol (`*not-copied*`, `not-copied-p` in `src/frontend.lisp`; in the image
+the property `%not-copied`, which `inline` removes). Their typed and raw
+clones, one per signature, are still made. The copies of the cell's test
+and of making the string were most of the code of each use: Code Map's page
+library, 1,131,745 to 1,066,764 octets of code.
 
 `js:get` of `null` or `undefined` (`NIL`) is `NIL`. A JavaScript exception in
 `js:call`, `js:funcall` or `js:new` is a Lisp error of type `js:js-error`

@@ -339,8 +339,10 @@ the image now."
     (case (car d)
       (special (dolist (s (cdr d)) (setf (gethash s *specials*) t)))
       (notinline (dolist (s (cdr d)) (setf (gethash (notinline-name s) *notinline*) t)))
-      (clysm-sys::not-copied (dolist (s (cdr d)) (setf (gethash s *not-copied*) t)))
-      (inline (dolist (s (cdr d)) (let ((s (notinline-name s))) (remhash s *notinline*) (setf (gethash s *declared-inline*) t))))
+      (clysm-sys::not-copied (dolist (s (cdr d)) (setf (gethash (notinline-name s) *not-copied*) t)))
+      (inline (dolist (s (cdr d))
+                (let ((s (notinline-name s)))
+                  (remhash s *notinline*) (remhash s *not-copied*) (setf (gethash s *declared-inline*) t))))
       (optimize (let ((safety (decls-safety (list d))))
                   (when safety (setf clysm-sys::*proclaimed-safety* safety))))
       (ftype (when (consp (cdr d))
@@ -450,7 +452,7 @@ destructuring-bind (defined by the runtime)."
       ;; nodes do not serve (&OPTIONAL, &KEY, &REST): its source is kept
       ;; for its calls (INLINE-EXPANSION-CALL)
       (when (and *program-inline-expansions* (not *live-mode*) (symbolp name))
-        (if (and (gethash sym *declared-inline*) (eq (car fnode) :lambda)
+        (if (and (gethash sym *declared-inline*) (not (not-copied-p sym)) (eq (car fnode) :lambda)
                  (not (lam-simple-p (second fnode))) (null (cenv-entries env))
                  (not (tree-mentions-p (cdddr (second fn-form)) sym)))
             (let ((src (inline-expansion-source fn-form)))
@@ -506,12 +508,13 @@ destructuring-bind (defined by the runtime)."
       ;; a small function defined at top level in the image: later calls may
       ;; contain a copy of its body (LIVE-INLINE-CALL)
       (when (and *live-inline-ok* (symbolp name) (eq (car fnode) :lambda)
-                 (null (cenv-entries env)) (live-inline-record sym fn-form))
+                 (null (cenv-entries env)) (not (not-copied-p sym)) (live-inline-record sym fn-form))
         (emit-toplevel-form `(clysm-sys::%note-live-inline ',sym) env))
       ;; a small function of a file given to COMPILE-FILE: its source is kept
       ;; in the fasl for the calls compiled after it is loaded (LIVE-INLINE-CALL)
       (when (and *unit-env* (symbolp name) (eq (car fnode) :lambda) (null (cenv-entries env))
-                 (not (gethash sym *notinline*)) (not (gethash sym *declared-inline*)))
+                 (not (gethash sym *notinline*)) (not (gethash sym *declared-inline*))
+                 (not (not-copied-p sym)))
         (let ((src (let ((*live-inline-max-size* *fasl-inline-max-size*)) (live-inline-source sym fn-form))))
           (when (and src
                      (ignore-errors (clysm-sys::%call-with-fasl-syntax
