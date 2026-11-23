@@ -456,6 +456,35 @@ makes, or :FAIL."
 
 ;;; the module made
 
+(defun ph-getenv (name)
+  #+sbcl (sb-ext:posix-getenv name)
+  #-sbcl (clysm-sys::%getenv name))
+
+(defun ph-run-node (script module variables)
+  "Run the host's SCRIPT on the file MODULE with node, in this process's
+environment without its CLYSM_ variables and NODE_OPTIONS and with VARIABLES
+(conses of a name and a value); what it wrote and its exit code."
+  #+sbcl
+  (let* ((out (make-string-output-stream))
+         (env (append (mapcar (lambda (v) (concatenate 'string (car v) "=" (cdr v))) variables)
+                      (remove-if (lambda (e)
+                                   (or (eql 0 (search "CLYSM_" e)) (eql 0 (search "NODE_OPTIONS=" e))))
+                                 (sb-ext:posix-environ))))
+         (p (sb-ext:run-program (or (sb-ext:posix-getenv "NODE") "node") (list script module)
+                                :search t :output out :error out :input nil :environment env)))
+    (values (get-output-stream-string out) (sb-ext:process-exit-code p)))
+  ;; (the compiler in the image: the variables to remove are given empty,
+  ;; which the host reads as not set, except those of VARIABLES)
+  #-sbcl
+  (let ((env (append (loop for name in '("CLYSM_IMAGE" "CLYSM_APP_IMAGE" "CLYSM_WORKER" "CLYSM_HEAP_MB"
+                                         "CLYSM_NURSERY_MB" "NODE_OPTIONS")
+                           unless (assoc name variables :test #'string=)
+                             collect (cons name ""))
+                     variables)))
+    (multiple-value-bind (out err code)
+        (clysm-sys::%run-program-sync (list (or (ph-getenv "NODE") "node") script module) :environment env)
+      (values (concatenate 'string out err) code))))
+
 (defun ph-run-runtime (m init prologue runtime-tops drop)
   "Run the runtime's toplevel forms of the module M on the host, and read
 the heap that they made.  DROP is NIL (%PREINIT-DROP-METHODS guesses the
@@ -463,7 +492,7 @@ classes whose methods it removes), :NONE or the names of those classes;
 the names of the classes are the second value."
   (let* ((start (find-func m :start))
          (body (wasm-func-body start))
-         (dir (let ((tmp (sb-ext:posix-getenv "TMPDIR")))
+         (dir (let ((tmp (ph-getenv "TMPDIR")))
                 (pathname (concatenate 'string (string-right-trim "/" (if (and tmp (plusp (length tmp))) tmp "/tmp"))
                                        "/clysm-preinit/"))))
          (stem (format nil "~36R" (random (expt 36 10) (make-random-state t))))
@@ -478,30 +507,24 @@ the names of the classes are the second value."
       (with-open-file (o wasm :direction :output :element-type '(unsigned-byte 8) :if-exists :supersede)
         (write-sequence octets o)))
     (unwind-protect
-         (let* ((out (make-string-output-stream))
-                (env (append
-                      (list "CLYSM_SAVE_IMAGE=1" (concatenate 'string "CLYSM_PREINIT_FILE=" (namestring img)))
-                      (and drop
-                           (list (format nil "CLYSM_PREINIT_DROP=(~{~A~^ ~})"
-                                         (mapcar (lambda (sym)
-                                                   (flet ((q (s) (with-output-to-string (o)
-                                                                   (loop for c across s
-                                                                         do (when (member c '(#\| #\\)) (write-char #\\ o))
-                                                                            (write-char c o)))))
-                                                     (format nil "|~A|::|~A|" (q (target-package-name (symbol-package sym)))
-                                                             (q (symbol-name sym)))))
-                                                 (if (eq drop :none) nil drop)))))
-                      (remove-if (lambda (e)
-                                   (or (eql 0 (search "CLYSM_" e)) (eql 0 (search "NODE_OPTIONS=" e))))
-                                 (sb-ext:posix-environ))))
-                (p (sb-ext:run-program (or (sb-ext:posix-getenv "NODE") "node")
-                                       (list (namestring (merge-pathnames "host/run.mjs" *preinit-root*))
-                                             (namestring wasm))
-                                       :search t :output out :error out :input nil :environment env))
-                (text (get-output-stream-string out)))
-           (unless (and (zerop (sb-ext:process-exit-code p)) (probe-file img))
-             (error "preinit: the runtime's toplevel forms failed on the host:~%~A" text))
-           (values (ph-read-file img) (ph-dropped-classes text)))
+         (let ((drop-spec
+                 (and drop
+                      (format nil "(~{~A~^ ~})"
+                              (mapcar (lambda (sym)
+                                        (flet ((q (s) (with-output-to-string (o)
+                                                        (loop for c across s
+                                                              do (when (member c '(#\| #\\)) (write-char #\\ o))
+                                                                 (write-char c o)))))
+                                          (format nil "|~A|::|~A|" (q (target-package-name (symbol-package sym)))
+                                                  (q (symbol-name sym)))))
+                                      (if (eq drop :none) nil drop))))))
+           (multiple-value-bind (text code)
+               (ph-run-node (namestring (merge-pathnames "host/run.mjs" *preinit-root*)) (namestring wasm)
+                            (append (list (cons "CLYSM_SAVE_IMAGE" "1") (cons "CLYSM_PREINIT_FILE" (namestring img)))
+                                    (and drop-spec (list (cons "CLYSM_PREINIT_DROP" drop-spec)))))
+             (unless (and (eql code 0) (probe-file img))
+               (error "preinit: the runtime's toplevel forms failed on the host:~%~A" text))
+             (values (ph-read-file img) (ph-dropped-classes text))))
       (when (probe-file wasm) (delete-file wasm))
       (when (probe-file img) (delete-file img)))))
 
@@ -609,7 +632,7 @@ system's data (the names, defaults and types of the slots).")
                  (dolist (s '(9 14)) (initargs (ph-slot k s)))
                  (mapc #'walk (ph-list-items (ph-slot k 5))))))
       (when top (walk top)))
-    (when (sb-ext:posix-getenv "CLYSM_PREINIT_STATS")
+    (when (ph-getenv "CLYSM_PREINIT_STATS")
       (format *error-output* "~&; preinit: ~D objects of the class system's data~%" (hash-table-count data)))
     data))
 
@@ -672,7 +695,7 @@ call AFTER-SHAKE with M, before the objects are written."
                  (*ph-kept-symbols* (make-hash-table))
                  (*ph-data-symbols* (make-hash-table))
                  (*ph-class-data* (ph-class-data-objects))
-                 (*ph-owner* (and (sb-ext:posix-getenv "CLYSM_PREINIT_STATS") (make-array n :initial-element nil)))
+                 (*ph-owner* (and (ph-getenv "CLYSM_PREINIT_STATS") (make-array n :initial-element nil)))
                  (*shake-heap-hook* #'ph-hook))
             (let ((inits (make-hash-table :test 'equal)))
               (loop for g across (wasm-module-globals m) do (setf (gethash (first g) inits) (fourth g)))
@@ -683,14 +706,14 @@ call AFTER-SHAKE with M, before the objects are written."
               (when (consp made)
                 ;; (instances of some of those classes can be made after
                 ;; all: their methods are kept, and the heap made again)
-                (when (sb-ext:posix-getenv "CLYSM_PREINIT_STATS")
+                (when (ph-getenv "CLYSM_PREINIT_STATS")
                   (format *error-output* "~&; preinit: the methods of ~S are kept~%" made))
                 (setf drop (or (set-difference dropped made) :none))
                 (loop for (f . body) in image-funcs
                       do (setf (wasm-func-body (find-func m f)) body
                                (wasm-func-ref-list (find-func m f)) :unknown))
                 (return-from round)))
-            (when (sb-ext:posix-getenv "CLYSM_PREINIT_STATS")
+            (when (ph-getenv "CLYSM_PREINIT_STATS")
               (format *error-output* "~&; preinit: the methods of ~D classes are removed: ~S~%"
                       (length dropped) dropped))
             (funcall after-shake m)
@@ -899,7 +922,7 @@ image is loaded, from words written as LEB128 numbers."
           (word +img-magic+) (word +img-preinit-version+) (word nbase) (word (+ next 4)) (word nrec)
           (loop for b across objs do (vector-push-extend b out))
           (loop for b across recs do (vector-push-extend b out))
-          (when (sb-ext:posix-getenv "CLYSM_PREINIT_STATS")
+          (when (ph-getenv "CLYSM_PREINIT_STATS")
             (format *error-output* "~&; preinit: ~D octets, objects ~D, records ~D~%" (length out) (length objs) (length recs))
             (ph-stats))
           (coerce out '(simple-array (unsigned-byte 8) (*))))))))
@@ -1107,11 +1130,13 @@ can make an instance (see above)."
                      (when j (note j (list :referred (ph-node j) :by (list :global name))))))
                  *ph-kept-mutables*)
         (let ((r (loop for k being the hash-keys of made collect k)))
-          (when (and r (sb-ext:posix-getenv "CLYSM_PREINIT_STATS"))
+          (when (and r (ph-getenv "CLYSM_PREINIT_STATS"))
             (maphash (lambda (k v) (format *error-output* "~&; preinit: ~S can have instances: ~S~%" k (first v)))
                      made))
           r)))))
 
-(unless (sb-ext:posix-getenv "CLYSM_NO_PREINIT")
+;;; (in the image a program built with --shake asks for it: STATIC-OPEN)
+#+sbcl
+(unless (ph-getenv "CLYSM_NO_PREINIT")
   (setf *preinit-function* 'preinit-shake))
 

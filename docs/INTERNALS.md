@@ -4724,6 +4724,264 @@ What makes the code fast:
   * **`p-calc`** (1.2) is `intern` of one-character strings (20%),
     `find-package` of `:keyword` at each call (5%), `sxhash` and the write
     barrier of its token list; not arithmetic.
+* **The bignum kernels in the linear memory; integers within 128 bits;
+  trees under a mask of 64 bits** (2026-11-23). Probes of each operation
+  on operands SBCL cannot fold (special variables; ns a call, the same
+  slot; `x` is times SBCL):
+
+  | operation | before | after | SBCL |
+  |---|---|---|---|
+  | product, 7900 by 8400 bits | 27300 (3.3x) | 12900 (1.45x) | 8900 |
+  | product, 2045 by 2044 bits | 2440 (4.3x) | 960 (1.6x) | 610 |
+  | product, 508 by 506 bits | 195 (3.9x) | 135 (2.6x) | 53 |
+  | product, 100 000 bits each | 1 656 000 (1.34x) | 844 000 (0.64x) | 1 312 000 |
+  | square, 7900 bits | 15900 (1.9x) | 6470 (0.73x) | 8900 |
+  | `expt` of 3 to 2000 | 1400 (1.9x) | 950 (1.2x) | 790 |
+  | `floor`, 7900 by 4180 bits | 11960 (2.9x) | 10500 (2.3x) | 4500 |
+  | `floor`, 2045 by 508 bits | 854 (2.0x) | 778 (1.7x) | 465 |
+  | `isqrt` of 7900 bits | 50800 (8.2x) | 11960 (1.7x) | 6960 |
+  | `isqrt` of 10^400 | 3540 (4.6x) | 3170 (3.8x) | 840 |
+  | sum and difference of 96 bits | 28 (1.7x) | 23 (1.4x) | 16.5 |
+  | a sum of 62-bit steps beyond 64 bits | 18.4 (3.0x) | 12.3 (2.05x) | 6.0 |
+  | FNV-1a of 64 bits, a step | 70 (38x) | 1.9 (1.0x) | 1.9 |
+  | xorshift64, a step (three updates) | 122 (66x) | 13 (7x) | 1.9 |
+  | splitmix64, a step | 237 (8.7x) | 24 (0.85x) | 28 |
+  | `logand` and `logxor` of 7900 bits | 702 (4.6x) | 240 (1.3x) | 183 |
+
+  Not changed by it, and still behind: a sum of two bignums (1.7-1.9x: 9
+  instructions a 32-bit digit, three of them bounds checks), a product by
+  a fixnum (1.8-2.0x), products of 3 to 16 digits (2.5-3.5x: the copy
+  into the memory and the allocation count there), `floor` of small
+  bignums (1.5-2.5x).
+
+  * **Products** (`:mag-mul`). V8 13.6 compiles Wasm SIMD: `i64x2.extmul_
+    low/high_i32x4_u` is `vpmuludq`, two 32x32->64 products an
+    instruction. The helper copies the digits of both operands into the
+    linear memory (the scratch the strings cross to the host through; A
+    from 0, B reversed after it, four zero digits after each), where a
+    load has no bounds check and takes four digits, and computes the
+    product by columns: a step multiplies four digits of A by four of B
+    into `VT`, the sum of the products modulo 2^64, and `VH`, the sum of
+    their high halves; the sum of the low halves is `VT - 2^32 VH`, so
+    nothing is carried from product to product and a column of any length
+    is exact (the high halves sum below 2^64 for 2^32 digits). A step may
+    run three digits past the column: one of the two digits is then a
+    zero of the padding. A square takes each cross product once (steps of
+    four while they fit, then single products) and doubles the two sums.
+    The inner loop is 18 instructions for four pairs of digits (a pair
+    took about 0.5 ns in the arrays, each access with its bounds check). Operands of up to four digits
+    stay row by row in the arrays. Karatsuba's step (Lisp code on
+    integers) now starts at 200 digits for a product and 400 for a square
+    (80 before: measured at 100 to 4096 digits with 80, 128, 200 and 300;
+    below 200 the columns win, a square's columns up to 400).
+  * **Division** (`:mag-divmod`, Knuth D). The shifted operands are in
+    the linear memory too; the pass that subtracts `qhat * v` takes two
+    digits a step: two products, their 64 bits taken from 64 bits of the
+    dividend, with the carry of the products and the borrow of the
+    differences as two chains (in one chain, the first version, the pass
+    was slower than the loop of single digits in the arrays: `floor` of
+    64 by 32 digits 961 -> 1083 ns; with two 824). The remainder of the
+    estimate is a product, not a second division. SBCL divides 64-bit
+    digits: 2.3x remains for long operands.
+  * **`isqrt`** of an integer beyond 64 bits is Zimmermann's recursion
+    (the root and remainder of the top half, one division of half the
+    size by twice that root, one square; digits of two bits so that every
+    operand is normalized), where Newton's iteration from half the bits
+    took two divisions of the full size.
+  * **Integers within 128 bits.** `:big-add` first decodes both operands
+    (a fixnum, a box, a bignum of two to four digits) into a sign and two
+    64-bit halves and adds or subtracts them without a loop, a comparison
+    of magnitudes or a temporary array; the result is made at its length
+    by one `array.new_fixed` (`:wide-int`). `:mul-wide` makes its product
+    that way; `:big-mul` takes two magnitudes below 2^64 (a box times a
+    bignum of two digits) to one 64x64 product; `logand`/`logior`/`logxor`
+    of two such integers that are not negative are two operations on the
+    halves, and `ash` of one whose result stays within 128 bits two
+    shifts (they went through `%ash2`, `%logand2` and the loops over
+    digits: a 64-bit generator's step was 60-120 ns). `a-sum-overflow`
+    1.33 -> 1.2.
+  * **Trees under a mask of 64 bits.** The fused arithmetic computed
+    modulo 2^64 under a `logand` with an operand within [0, 2^63); a mask
+    of `#xFFFFFFFFFFFFFFFF`, what 64-bit hashes and generators use, was
+    outside it and every step made bignums (FNV-1a 38 times SBCL,
+    xorshift 66). Now a `logand` with an operand within [0, 2^64), and a
+    `logior` or `logxor` of two such operands, are computed on the low 64
+    bits of their operands, whatever integers those are (`:low-i64`: the
+    low bits of a box or of a bignum, in two's complement), and a shift
+    to the right of an operand within [0, 2^64) is a logical shift. The
+    result is an unsigned i64: at the root of the tree it is made an
+    integer by `:u64-int` (a bignum of two digits from 2^63); an
+    accumulator keeps it in its i64 below 2^63 and as that integer in its
+    eqref local from there (so half of the steps of a hash still allocate
+    and decode: xorshift64 is 7 times SBCL, which keeps the word in a
+    register); inside a tree that needs the value as a signed i64, a
+    result from 2^63 leaves for the generic code. The type inference
+    widens a loop variable's upper bound to 2^64 - 1 after 2^63 - 1, so
+    that the variable of such a loop is known to be within 64 bits.
+    Next: a third state of the accumulator's pair of locals (an unsigned
+    i64 in the i64 local under a mark in the eqref one), which would
+    remove the allocation.
+  * **Logical operations of two long integers that are not negative**
+    are a loop of one operation a digit over the digits both have, after
+    an `array.copy` of the longer one's for `logior` and `logxor` (the
+    general loop converts each digit from and to two's complement and
+    selects the operation at each digit).
+  * **Tried and not kept: two digits a step in the sum of two bignums and
+    in the product by a fixnum**, as one 64-bit addition whose carry is a
+    comparison (the carry then passes through three instructions for two
+    digits instead of two for each). Slower: a sum of 7900 bits 156 ->
+    206 ns, a product of 7900 bits by a fixnum 160 -> 202, the factorial
+    of 2000 352 -> 469 us, the Fibonacci sums 82 -> 100 us. The loops are
+    bound by their instructions (the four loads and two stores with their
+    bounds checks stay, and the digits are joined and split besides), not
+    by the carry.
+  * **Not done**: sums of long bignums and products by a fixnum
+    (`b-bignum`, the Fibonacci sums of `p-bignum-misc`) are as they were.
+    In the linear memory they would have no bounds checks, but the digits
+    live in GC arrays and there is no bulk copy between an array and the
+    memory: copying in and out is two checked accesses a digit, what the
+    loops cost now.
+  * **The benchmark files** (two interleaved rounds, base and new on one
+    slot): `a-sum-overflow` 1.52 -> 1.32; `b-bignum`, `b-ratio`,
+    `p-bignum-misc`, `f-generators` within the noise (their time is in
+    the sums, the products by a fixnum, the gcds and the closures);
+    `suite` 0.991 of its time, `arith` 0.960, `holdout` 0.972, `programs`
+    1.005, `functional` 1.03 (items of 3 to 6 ms). The module of one
+    export 907,414 -> 910,637 bytes, the REPL image 8,596,136 ->
+    8,619,050. Tests: `tests/cases/bignum-kernels.lisp`,
+    `wide-int-sums.lisp`, `wide-int-ops.lisp`, `u64-ops.lisp`,
+    `u64-trees.lisp` (hashes of results against SBCL).
+  * **Large vectors** (`p-double-vector`, `p-u32-vector`,
+    `v-seq-copying`): measured again, not changed. `(make-array n
+    :element-type 'double-float)` of 16 000 elements (128 KB less a
+    header) takes 5 us, of 20 000 30 us (SBCL 4 and 4), of 200 000 235
+    (SBCL 50): the step is V8's large-object threshold, and the
+    benchmarks make their one or two vectors a run and nothing twice.
+* **Unsigned accumulator state and short digit kernels** (2026-11-23,
+  continuation of the work above). The baseline is `995c33f`. Instruction
+  profiles (`node --prof --prof-sampling-interval=100`, PCs mapped onto
+  `--print-wasm-code`) separate the three remaining items:
+
+  | item | share of Wasm samples | hot instructions |
+  |---|---|---|
+  | `b-bignum` | 95% in `:big-mul`, with `:mag-mul1` copied into it | the digit product, addition of carry, shift and checked store |
+  | `b-ratio` | 35% in `%gcd-big`, 18% in `%int-truncate`, 17% in products | the remainder loop's `divq` per digit, then quotient division and products by a small integer |
+  | `p-bignum-misc` | 69% in `:big-add`, 11% in the benchmark, 8% in products | the sum loop's bounds checks and carry shifts |
+
+  The SBCL comparison (`sb-sprof` and disassembly of its multiply, add and
+  single-digit truncate kernels) uses `mulx` and `adc` on 64-bit digits.
+  These three items are principally long-by-small products, long sums and
+  reductions, not products of two small bignums. The short kernels below
+  help general arithmetic but do not remove those long-loop costs.
+
+  * An accumulator now has an unsigned state: a second reserved i31 in
+    its eqref local, with all 64 bits in its i64 local. A masked update
+    stores this state above 2^63-1. Wrapped reads use the bits directly;
+    signed arithmetic rejects the mark and its generic fallback makes
+    the unsigned integer. Ordinary reads, comparisons and mixed numeric
+    updates materialize it as well. Aliases introduced for guarded
+    inlining copy the state. The double's mark stays distinct. Functions
+    without logical arithmetic omit all unsigned-marker checks: emitting
+    those checks everywhere enlarged ordinary accumulator code and gave
+    avoidable regressions.
+  * Equal-length products of three through eight digits use generated
+    Comba kernels: constant-index loads into locals, low and high sums of
+    each column, and one `array.new_fixed` for the result. There is no
+    copy through linear memory and no repeated read/write of the output
+    digits. The existing 64-by-64 path handles two digits; unequal lengths
+    and larger products keep the previous row/SIMD paths.
+  * Binary GCD decodes magnitudes through 128 bits into two i64s. It
+    removes powers of two, subtracts and shifts without intermediate
+    integers, and switches to `:gcd64` once both high halves are zero.
+    Keeping the two-word loop all the way to completion was slower on
+    127/128-bit operands (about 180–199 ns versus 147–165); it is not kept.
+    Larger operands still use Lehmer's algorithm.
+  * Integer division through 128 bits by a nonzero unsigned 32-bit
+    magnitude computes the four quotient digits in locals and constructs
+    the quotient and signed remainder directly. Existing Lisp code adjusts
+    truncation to floor. Ratio reduction's exact division by a one-digit
+    divisor uses a separate low-to-high loop: remove powers of two, find
+    the odd divisor's inverse modulo 2^32 with five Newton steps, and
+    multiply/subtract carries. The quotient's length is determined before
+    allocation, avoiding a temporary array and trimming copy.
+  * Remainders by divisors through 65536 consume three 32-bit array
+    digits as two 48-bit chunks. Each remainder fits beside its chunk
+    in an unsigned i64. This removes one of three hardware divisions
+    without allocating or copying digits; the old loop handles trailing
+    digits and larger divisors. Against the preceding changes, all three
+    alternating pairs improved (best 2628 -> 2242 ms for the ratio sum).
+  * Rejected: an f64 reciprocal for the remainder loop, with exact
+    corrections of an estimate at most one away, slowed `b-ratio` from
+    2743/3122 to 3454/3520 ms in alternating runs. Precomputing the sum's
+    final carry to allocate its exact length, together with skipping
+    normalization of long products by fixnums, gave no repeatable benefit
+    (factorial medians 698 -> 702 ms; miscellaneous 701 -> 684, ratio
+    2956 -> 3028). Those changes were reverted. Padding every short
+    product to four digits also wasted products and required a trimming
+    copy for three-digit operands; the separate sizes avoid that.
+
+  Best of three interleaved base/new/SBCL processes: the final three
+  standard files and extended target loops ran on slot 2; operation probes
+  ran on slot 0 before the final remainder change (which they do not use).
+  Operands of those probes are special variables, not foldable constants:
+
+  | operation | before | after |
+  |---|---|---|
+  | xorshift64 step | 13.87 ns | 1.76 ns (SBCL 1.93) |
+  | FNV-1a step | 2.00 ns | 0.85 ns (SBCL 1.86) |
+  | splitmix64 step | 24.61 ns | 12.70 ns (SBCL 28.90) |
+  | products of 3 / 4 / 5 / 6 / 7 / 8 digits | 25 / 24 / 37 / 45 / 48 / 53 ns | 22 / 19 / 21 / 22 / 29 / 34 ns |
+  | GCD, 64 / 65 / 95 bits | 81 / 90 / 136 ns | 45 / 51 / 89 ns |
+  | GCD, 127 / 128 bits | 153 / 133 ns | 138 / 138 ns (little change) |
+  | floor, 95 / 127 / 128 bits by 65537 | 30.5 / 31.5 / 30 ns | 25 / 28.5 / 26 ns |
+  | factorial of 2000, 2000 calls | 730 ms | 728 ms (SBCL 494) |
+  | harmonic sum of 2000 ratios, 2000 calls | 3181 ms | 2564 ms (SBCL 2992) |
+  | `p-bignum-misc`, 6000 calls | 673 ms | 665 ms (SBCL 443) |
+
+  The long sums and products remain effectively unchanged. Geometric means
+  versus SBCL: `suite` 0.660 -> 0.654, `programs` 0.701 -> 0.696,
+  `arith` 0.477 -> 0.467. Operation-probe means: unsigned state
+  1.876 -> 0.569, short products/general floor 1.957 -> 1.604, and
+  small GCD/single-digit floor 0.383 -> 0.314. In the short standard
+  runs, `a-points` was 8 -> 10 ms (both medians 10), and `p-specials`
+  27 -> 29 ms; small/general floor probes also include 80 -> 88 ns
+  (95-bit) and 106 -> 118 ns (159-bit). These are not claimed as wins.
+  A further interleaved `a-points` probe with 500 calls instead of 10
+  measured 367/376/418 -> 372/390/383 ms: no repeatable 25% regression.
+  The shaken one-export module is 910637 -> 921297 bytes (+1.17%,
+  below its 970000-byte budget); the native REPL image is
+  8619050 -> 8663213 bytes (+0.51%).
+  Final test status and the REPL size are recorded in the worktree's
+  `build/CODEX-REPORT.md`. Focused differential tests are
+  `u64-accumulator.lisp`, `small-integer-kernels.lisp` and
+  `ratio-exact-digits.lisp` and `remainder-chunks.lisp`. These cover materialization and mixed numeric
+  transitions, every short product size, long carries, signs, shifts across
+  the 64-bit boundary, quotient/remainder signs, odd/even exact divisors,
+  and the remainder chunk boundary at 65536 across 2–70 digit magnitudes.
+  **The mark only where it can arise (2026-11-23, after the port onto the
+  list work).** `dual-u64-enabled-p` was true for any function with a
+  LOGAND, LOGIOR or LOGXOR, so every accumulator of such a function tested
+  the mark at its reads and updates; ordinary loops that keep a sum small
+  with `(logand s #xFFFFFF)` paid for it: against the base without the
+  bignum work, 13 interleaved rounds, `p-specials` 26 -> 29 ms,
+  `p-call-conv` 41 -> 45, `b-call` 49 -> 52, `p-accessor` 69 -> 73. The
+  mark is now enabled only by a logical operation whose value may be 2^63
+  or more: a LOGAND none of whose operands is known to be within
+  [0, 2^63), a LOGIOR or LOGXOR with an operand not known to be. The
+  update of an accumulator leaves an unsigned root only under the same
+  predicate (`*fused-unsigned-ok*` is bound to it in `dual-lset-code`), so
+  a function without the tests cannot make the mark whatever its trees
+  are: a result from 2^63 there takes the generic code, as before the
+  mark existed. Ten interleaved rounds of base / before / after on one
+  slot (ms): `p-specials` 27 / 30 / 26, `p-call-conv` 44 / 47 / 44,
+  `b-call` 53 / 56 / 53, `p-accessor` 73 / 75 / 73, `p-simple-error`
+  52 / 54 / 53; `b-ratio` 84 / 71 / 69 and `a-sum-overflow` 78 / 70 / 72
+  keep their gains; geometric means against the base `suite` 1.004,
+  `programs` 1.002, `arith` 0.960. The module of the FNV-1a, xorshift64
+  and splitmix64 loops of `u64-trees.lisp` is byte for byte the same
+  before and after (their masks are of 64 bits). `u64-bounded-sums.lisp`
+  has both kinds of function with operands across 2^63 and 2^64.
+
 * **Division of floats** (`floor ceiling truncate round`, the `f` versions,
   `mod rem`) computes what SBCL does, in the inline code, the helper
   `:divmod` and `%float-divmod` alike: the float quotient rounded for the
@@ -5709,8 +5967,9 @@ What makes the code fast:
 * **Numbers**: fixnum, 64-bit, single and double arithmetic and comparisons
   in Wasm helpers; `floor` and friends, `isqrt`, `gcd`, `ldb`, the
   irrational functions as primitives; bignum kernels in Wasm: products by
-  columns (two accumulators, no carry chain from product to product; a
-  square takes each cross product once), Knuth's division, Lehmer's gcd
+  columns, four pairs of digits a step with SIMD on copies of the digits
+  in the linear memory (no carry chain from product to product; a
+  square takes each cross product once), Knuth's division there, Lehmer's gcd
   (one pass over the digits per 30 bits of quotients, as CPython's), the
   remainder by a divisor below 2^32 without a quotient, decimal printing by
   10^9 a pass straight into the string; `expt` of an integer from the top
@@ -7263,6 +7522,16 @@ What makes the code fast:
   is 72.5 -> 78.5 over eight rounds. Calling `box-i32` even for a
   fixnum result was tried first and not kept (`v-mapping` 42 -> 44 ms);
   the retained path boxes a fixnum inline.
+  With the unsigned trees of the bignum work (a root under a mask of 64
+  bits left as an unsigned i64, `*fused-unsigned-ok*`, and the unsigned
+  mark of an accumulator), `fused-code` chooses per tree: the i32 code
+  when the tree is a bounded sum of boxed or constant leaves (its root is
+  then an addition or a subtraction, never unsigned), otherwise the i64
+  code, whose root may be unsigned when the result is not known to be a
+  fixnum. A logical operation or an accumulator inside a sum is a leaf
+  of another kind or makes the range unknown, so such a sum takes the i64
+  code. `u64-bounded-sums.lisp` has sums beside masked trees and an
+  unsigned accumulator at the fixnum and 2^63 boundaries.
 
 * **The four list changes together (2026-11-23, final build).** Node.js
   24.21.0, SBCL 2.6.0.debian; eight interleaved rounds per build against
@@ -9678,15 +9947,45 @@ application of two systems and a file: macros and a function of
 function, `intern` at run time and a `notinline` function redefined.
 
 **`--shake`** leaves the functions that nothing refers to out of the built
-module (`shake-module`, as `clysm compile --shake` in the compiler compiled
-by itself: without the heap made beforehand, `src/preinit.lisp`, which
-only the compiler on SBCL has): `tests/hello.lisp` 5.25 -> 3.90 MB,
-`tests/static`'s application 5.33 -> 3.98 MB, the seven systems of
-`bench/libs.lisp` with the benchmarks 9.10 -> 7.61 MB (the build 11 -> 18
-s). The contract is that of `--shake`: of the library benchmarks only
-Alexandria's own tests fail it (rt evaluates the forms of the tests, kept
-as data, when it runs: the functions they name are not referred to by
-code).
+module (`shake-module`), and the module starts from the heap of the
+runtime made when it is built, as `clysm compile --shake` on SBCL
+(`src/preinit.lisp`, "Size and start-up"; 2026-11-23). At first the image
+had only the shaking: `tests/hello.lisp` 5.25 -> 3.90 MB, where SBCL's
+compiler made 1.90 MB, the runtime's toplevel forms keeping their definers
+and all that those reach. `src/preinit.lisp` is now compiled into the
+image too. What it took from SBCL is the environment and the process that
+runs the module of the runtime's toplevel forms (`ph-getenv`,
+`ph-run-node`: `sb-ext:run-program` there, `sys::%run-program-sync`,
+node's `spawnSync`, in the image, where the variables the child must not
+see are given empty); `static-open` records how many toplevel functions
+the runtime has (`*runtime-top-count*`) and names `preinit-shake` for
+`build-module`, in the state of the program being built, so that nothing
+changes for the image's other compilations (`CLYSM_NO_PREINIT=1`: the
+module runs its toplevel forms, as before). The heap is that of the
+runtime alone: the toplevel forms of the systems run when the program
+starts.
+
+| | whole | `--shake` before | `--shake` now |
+|---|---|---|---|
+| `tests/hello.lisp` | 5.25 MB | 3.91 MB | 1.90 MB (SBCL's compiler: 1.90) |
+| its start (`node host/run.mjs`, best of 15) | | 136 ms | 55 ms (SBCL's: 54) |
+| `tests/static`'s application | 5.34 MB, 151 ms | 3.98 MB | 2.95 MB, 121 ms |
+| `bench/libs.lisp`, seven systems | 9.12 MB | 7.61 MB | 6.64 MB |
+| `bench/apps.lisp`, five systems | 11.24 MB | 9.73 MB | 8.97 MB |
+
+The benchmarks of both files give the same results shaken either way
+(of the library benchmarks only Alexandria's own tests fail the contract
+of `--shake`: rt evaluates the forms of the tests, kept as data, when it
+runs, and the functions they name are not referred to by code). The build
+takes longer (libs 14 s whole, 17 s shaken, 19 s with the heap; apps 17 and
+30 s: the module of the runtime's forms is encoded and run, and the heap
+walked), and the REPL image is 239 KB larger (8,676,800 -> 8,915,413
+octets: `src/preinit.lisp`, which only a build with `--shake` calls; it
+could instead be loaded when such a build asks for it). `tests/static`
+checks that the heap was made and that the shaken module is under two
+thirds of the whole one. `--image` with `--shake` is refused by
+`bin/clysm`: a shaken module has no loader of heap images of its own (the
+image was saved and then not loaded, before this too).
 
 **A heap image of a built program** (`--main FUNCTION --image`). The
 mechanism of the REPL image (Heap images) serves a built program as it is:
@@ -9706,8 +10005,92 @@ loaded is then done when the image is saved, on the machine that builds: a
 program that reads its environment in a toplevel form (a path, the time,
 a file) has what it read then, as with any saved image.
 
-Next: the heap of a shaken built program made beforehand (preinit in the
-image); the linked image and compilation hints for the start of a built
+**`l-babel` built and loaded: no interaction, large objects** (2026-11-23).
+The table above has `l-babel` slower built (1.5-1.7) than loaded
+(1.4-1.5). Measured again, alternately on one slot: babel alone in a
+module, 300 repetitions, 598, 619, 613 ms built and 582, 616, 625 loaded
+(SBCL 420-428); 50 repetitions, 97-111 and 97-107; in the whole
+`bench/libs.lisp`, 94-104 built and 92-98 loaded (five rounds: the built
+program has runs at 95 and at 104, the loaded one stays under 98; a
+nursery of 64 MB from the start, `--min-semi-space-size=64`, does not
+remove them: 99-107). There is nothing between the parts to fix: the code
+is the same and the collector is 7% (four scavenges of 1.8 ms).
+What the benchmark has against SBCL in both modes is **the allocation of
+large objects**: each repetition makes two strings of 330 000 characters
+(1.3 MB) and two vectors of octets, and a third of its time is
+`:make-storage`, `make-string` and `%concatenate-2-strings`. The same 990
+million characters allocated as strings of N characters (`make-string`,
+ms; SBCL in parentheses): N = 1000: 130-176 (323-345), 20 000: 75-171
+(300-369), 30 000: 81-176 (288-308), 40 000: 662-701 (266-277), 100 000:
+577-599 (276), 330 000: 527-541 (321-340), 1 000 000: 527-531 (407-427).
+Under the engine's limit of a regular object (128 KB: 32 000 characters)
+Clysm allocates faster than SBCL; over it the object is a page of its own
+in the engine's space of large objects, mapped when it is made and
+unmapped at the scavenge after: its 4 KB pages are faulted in every time
+(a million faults for those 4 GB, about 400 ms), where SBCL's nursery is
+the same memory again. Filling with zero instead of a space is no faster
+(864-987 against 854-957 ms for 3000 strings of 330 000), and the engine
+has no flag that keeps such pages (`--v8-options`: only regular pages are
+pooled); transparent huge pages are `madvise` on this machine and the
+engine does not ask. Not fixed: it is the engine's, and a string in
+pieces would cost every string operation.
+
+**What a closed world does not give `a-esrap` and `a-cl-json-decode`**
+(2026-11-23; measured and not kept). Alone in a built module, 20
+repetitions: esrap 745-800 ms against SBCL's 571-589 (1.31), cl-json's
+decoder 900-1100 against 673 (1.35-1.6).
+* The calls are not it. In the built program a call of a global function
+  is already a direct call without a guard on the cell, and esrap's
+  closures in structure slots are `funcall`ed through one `call_ref`
+  (`funcall` of a closure 118 ms where SBCL takes 127; a constructor 56
+  against 103; an accessor 86 against 85; a sequence combinator of
+  closures 259 against 297). The instruction profile (`--prof
+  --perf-prof`) of esrap is flat: `rule/transform` 14%, the sequence
+  closure 12%, `(setf cached)` 11% (the `equal` hash table: as SBCL's),
+  `successful-parse-production` 10%, the collector 5%.
+* The checks of types are 13% of esrap at most: every file of esrap with
+  `(declaim (optimize (safety 0)))` (the runtime as it is) takes 644-672
+  ms. One operation alone is slower than SBCL's: the predicate of a
+  structure that others `:include` (31 against 10 ms for 10^7 calls: the
+  class by its global, `ref.test $siN`, the layout, then the vector of
+  included classes at the class's depth).
+* **A Wasm type for each structure class** was implemented for built
+  programs and reverted: a final type `$SC-n <: $siN` of the same fields
+  for each class with a constructor (a rec group with a marker type, or
+  the engine makes classes of the same size one type; `(:group n def)` in
+  the type section), allocated by the constructors, and predicates,
+  accessors, casts and the shadows of typed variables testing the types of
+  the class and of the classes that include it (`ref.test` of a final
+  type is one comparison of maps, the cast then gives the fields) before
+  the path of today. The module was valid and the tests passed; esrap
+  took 814-879 ms (752-800 without: 7% *slower*), the predicate of the
+  included structure the same 34 ms, the module 26 KB more. Why: (1) the
+  classes that include a structure are known only when all files are
+  compiled, and esrap's `result-position` is compiled before any of the
+  structures including `result`: no type to test there; (2) an object of
+  a class type is no longer exactly a `$siN`, so every test or cast of
+  `$siN` that remains (generic slot access, the paths without candidates)
+  is the engine's walk of supertypes (three loads more) instead of one
+  comparison; (3) a predicate that answers false cannot be decided by the
+  types of the class's own family.
+  What would work is the classes as true subtypes (`$C <: $P`, so that
+  `ref.test $P` alone decides, and code compiled before `C` exists needs
+  nothing): then an instance with more slots than its parent is not a
+  `$siN` of its size, and all generic access to slots (`%struct-ref`,
+  `copy-structure`, `equalp`, the printer, heap images) must go through
+  operations of the class, as the structures with unboxed `double-float`
+  slots do. Its ceiling on esrap is under the 13% above.
+* cl-json's decoder conses as much as on SBCL (38 MB for a document of
+  580 KB there), and a fifth of its time is the scavenger (a scavenge at
+  every repetition, 1-19 ms by how much of the tree being built is alive
+  then; the nursery is the subject of "The young generation's limit");
+  the rest is flat (`decode-json-object` 8%, the benchmark's own walk of
+  the result 10%, the string streams of the tokens, `intern`,
+  `camel-case-split`).
+
+Next: the heap of a shaken program after the *systems'* toplevel forms
+(`--preinit-through`, which `clysm compile` has: the definers of the
+program's classes and packages then go too); the linked image and compilation hints for the start of a built
 program (as Lem's desktop application has); the module in a browser page
 (`host/web`).
 

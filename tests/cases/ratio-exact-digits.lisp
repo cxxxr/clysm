@@ -1,0 +1,15 @@
+;;; Ratio reduction divides long numerators and denominators exactly by
+;;; odd and even single digits, including the limits of unsigned 32 bits.
+(defun check-ratio-digits ()
+  (let ((hash 0))
+    (dolist (bits '(65 96 127 128 129 255 512 1024))
+      (dolist (d '(2 3 4 6 15 256 65535 65536 65537 536870911 536870912 2147483648 4294967295))
+        (dolist (sign '(1 -1))
+          (let* ((a (* sign (+ (ash 1 bits) 123456789)))
+                 (x (/ a (* d (+ (ash 1 (- bits 3)) 17))))
+                 (y (/ (+ a 2) (* d (+ (ash 1 (- bits 2)) 19)))))
+            (dolist (r (list (+ x y) (- x y) (* x y) (/ x y)))
+              (setq hash (mod (+ (* hash 31) (numerator r) (* 7 (denominator r))) 1000000007)))))))
+    hash))
+(print (check-ratio-digits))
+(terpri)

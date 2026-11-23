@@ -100,6 +100,8 @@ three products of halves, A1 B1, A0 B0 and (A1 + A0)(B1 + B0)."
   "Returns (values quotient remainder) of integers."
   (let ((q (%int64-op a b 6)))
     (when q (return-from %int-truncate (values q (%int64-op a b 7)))))
+  (multiple-value-bind (q r) (%int-div-small a b)
+    (when q (return-from %int-truncate (values q r))))
   (when (eql b 0) (error 'division-by-zero :operation 'truncate :operands (list a b)))
   (let ((sa (%int-sign a)) (sb (%int-sign b)) (ma (%int-mag a)) (mb (%int-mag b)))
     (if (%fx= (%mag-length mb) 1)
@@ -337,7 +339,8 @@ converts to a double exactly, so only bignums and ratios need it."
       (setq n (truncate n g) d (truncate d g)))
     (if (eql d 1) n (%make-ratio n d))))
 
-(defun %exact-quotient (a b) (if (eql b 1) a (values (%int-truncate a b))))
+(defun %exact-quotient (a b)
+  (if (eql b 1) a (or (%int-exact-small a b) (values (%int-truncate a b)))))
 (defun %ratio-add (a b)
   ;; Knuth 4.5.1: the gcds are taken of the (small) common factors only
   (let* ((na (numerator a)) (da (denominator a)) (nb (numerator b)) (db (denominator b))
@@ -833,17 +836,32 @@ rounded toward zero is, and the remainder number - (-0.0 * divisor) then."
 
 ;;; ISQRT is a primitive (integers within 64 bits in Wasm)
 (defun isqrt (n) (isqrt n))
+;;; The root of an integer beyond 64 bits is Zimmermann's ("Karatsuba Square
+;;; Root"; Brent and Zimmermann, Modern Computer Arithmetic, algorithm 1.12,
+;;; with digits of two bits, so that every operand is normalized): the root
+;;; S1 and remainder R1 of the top half of the bits, then one division of
+;;; (R1, the next quarter) by 2 S1, whose quotient Q is the low half of the
+;;; root, at most one too large, which the sign of the remainder with the
+;;; last quarter less Q^2 tells.  One division of half the size and one
+;;; square a level, where Newton's iteration (as SBCL's) takes two divisions
+;;; of the full size.
+(defun %isqrt-rem (n)
+  "The integer square root of N > 0 and N less its square."
+  (let ((bits (integer-length n)))
+    (if (<= bits 62)
+        (let ((s (isqrt n))) (values s (- n (* s s))))
+        (let* ((kb (* 2 (ash (ash (+ bits 1) -1) -2)))
+               (mask (- (ash 1 kb) 1)))
+          (multiple-value-bind (s1 r1) (%isqrt-rem (ash n (- (* 2 kb))))
+            (multiple-value-bind (q u) (floor (+ (ash r1 kb) (logand (ash n (- kb)) mask)) (ash s1 1))
+              (let ((s (+ (ash s1 kb) q))
+                    (r (- (+ (ash u kb) (logand n mask)) (* q q))))
+                (if (minusp r)
+                    (values (- s 1) (+ r (ash s 1) -1))
+                    (values s r)))))))))
 (defun %isqrt-big (n)
   (unless (and (integerp n) (>= n 0)) (%type-error n '(integer 0)))
-  ;; Newton's iteration from an estimate above the root: the root of the top
-  ;; half of the bits (recursively), rounded up and shifted back, which has
-  ;; half the root's bits right (one or two steps at the full size)
-  (let* ((k (ash (integer-length n) -2))
-         (x (ash (+ 1 (isqrt (ash n (- (* 2 k))))) k)))
-    (loop
-      (let ((y (ash (+ x (values (%int-truncate n x))) -1)))
-        (when (>= y x) (return x))
-        (setq x y)))))
+  (values (%isqrt-rem n)))
 
 (defun exp (x) (exp x))
 (defun %exp-slow (x)

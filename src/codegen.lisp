@@ -1474,7 +1474,7 @@ for a lexical LET whose body is compiled by BRANCH-CODE."
                  ;; copied, without making the integer (the argument of a
                  ;; guarded copy of a function, CG-DUAL-I64)
                  (let ((src (dual-alias-src lv init)) (b (new-local)) (v (new-local :i64)))
-                   (setf code (append code `(,@(dual-b-code src) (:local.set ,b)
+                   (setf code (append code `(,@(dual-b-code src t) (:local.set ,b)
                                              (:local.get ,(dual-local src)) (:local.set ,v))))
                    (set-loc lv (cons :local b))
                    (remhash lv *fdual-vars*)

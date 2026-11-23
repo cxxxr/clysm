@@ -21,7 +21,8 @@
 #                                         them, so macros and EVAL-WHEN work as in COMPILE-FILE;
 #                                         --load: a file loaded there first (where the systems are)
 #                                         --asdf: ASDF and UIOP are part of the program;
-#                                         --shake: without the functions nothing refers to
+#                                         --shake: without the functions nothing refers to,
+#                                         starting from the runtime's heap made at build time
 #                                         --main: the function the program runs; with --image
 #                                         the heap after the toplevel forms ran is saved in
 #                                         OUT.img, and `clysm exec OUT.wasm` starts from it
@@ -145,12 +146,15 @@ case "$cmd" in
   build)  img="$(repl_image)"; heap_image "$img"
           # --image: the heap of the program after its toplevel forms ran is
           # saved next to the module (OUT.img), and `clysm exec` starts from it
-          out="a.wasm"; image=""; prev=""
+          out="a.wasm"; image=""; shaken=""; prev=""
           for a in "$@"; do
             [ "$prev" = "-o" ] && out="$a"
             [ "$a" = "--image" ] && image=1
+            [ "$a" = "--shake" ] && shaken=1
             prev="$a"
           done
+          # (a shaken module has no loader of heap images of its own)
+          [ -z "$image" ] || [ -z "$shaken" ] || { echo "clysm build: --image is not for a program built with --shake" >&2; exit 1; }
           [ -n "$image" ] || exec "$NODE" $NURSERY "$ROOT/host/run.mjs" "$img" "$ROOT/tools/static-build.lisp" "$@"
           rm -f "${out%.wasm}.img"
           "$NODE" $NURSERY "$ROOT/host/run.mjs" "$img" "$ROOT/tools/static-build.lisp" "$@" || exit 1
