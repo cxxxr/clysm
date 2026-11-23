@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, copyFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { decompress } from '../../host/web/xz.mjs';
 
 function pack(bytes) {
-  const result = spawnSync('xz', ['--compress', '--stdout', '--check=crc32', '-9'],
+  const result = spawnSync('xz', ['--format=xz', '--compress', '--stdout', '--check=crc32', '-9'],
     { input: bytes, maxBuffer: bytes.length * 2 + 4096 });
   assert.ifError(result.error);
   assert.equal(result.status, 0, result.stderr.toString());
@@ -43,3 +43,30 @@ try {
   rmSync(scratch, { recursive: true, force: true });
 }
 console.log('lib: missing XZ encoder diagnostic ok');
+
+// User defaults must not silently change an embedded library's format.
+const defaultsScratch = mkdtempSync(join(tmpdir(), 'clysm-xz-defaults-'));
+try {
+  for (const key of ['XZ_OPT', 'XZ_DEFAULTS']) {
+    const directory = join(defaultsScratch, key);
+    mkdirSync(directory);
+    const wasm = join(directory, 'compressed.wasm');
+    // Regeneration starts from the compiler's complete module, including
+    // the custom sections that the first generator moved to .debug.
+    writeFileSync(wasm, Buffer.concat([
+      readFileSync('build/lib-test/compressed-xz-eager/compressed.wasm'),
+      readFileSync('build/lib-test/compressed-xz-eager/compressed.wasm.debug').subarray(8),
+    ]));
+    const result = spawnSync(process.execPath, [resolve('tools/gen-library.mjs'), wasm],
+      { env: { ...process.env, XZ_OPT: '', XZ_DEFAULTS: '', [key]: '--format=lzma' }, encoding: 'utf8' });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr);
+    const loaded = spawnSync(process.execPath, [resolve('tests/lib/compressed.mjs'), directory, 'eager'],
+      { encoding: 'utf8' });
+    assert.ifError(loaded.error);
+    assert.equal(loaded.status, 0, loaded.stderr);
+  }
+} finally {
+  rmSync(defaultsScratch, { recursive: true, force: true });
+}
+console.log('lib: XZ format overrides inherited encoder defaults');

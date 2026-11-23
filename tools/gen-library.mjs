@@ -233,7 +233,7 @@ if (compression !== null && (!embed || !['gzip', 'xz'].includes(compression))) {
 let packed = compiled;
 if (compression === 'gzip') packed = gzipSync(compiled, { level: 9 });
 if (compression === 'xz') {
-  const result = spawnSync('xz', ['--compress', '--stdout', '--check=crc32', '-9'],
+  const result = spawnSync('xz', ['--format=xz', '--compress', '--stdout', '--check=crc32', '-9'],
     { input: compiled, maxBuffer: Math.max(1024 * 1024, compiled.length * 2) });
   if (result.error || result.status !== 0) {
     throw new Error(`XZ library compression requires a working xz command: ${result.error?.message ?? result.stderr.toString()}`);
