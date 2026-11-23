@@ -11,6 +11,8 @@
 # REPL image (bin/clysm build, src/static.lisp).
 # With SHAKE=1 they are compiled with --shake (the functions nothing refers
 # to are left out).
+# With THROWN=1 they are compiled with --thrown-exits (every non-local exit a
+# Wasm exception).
 cd "$(dirname "$0")/.." || exit 1
 NURSERY="--max-semi-space-size=${CLYSM_NURSERY_MB:-256}"   # as bin/clysm starts the image
 mkdir -p build/tests
@@ -33,7 +35,7 @@ for f in ${@:-tests/cases/*.lisp}; do
     elif [ -n "$SELFHOST" ]; then
       compile="node host/run.mjs build/clysmc.wasm"
     else
-      compile="sbcl --script tools/build.lisp${SHAKE:+ --shake}"
+      compile="sbcl --script tools/build.lisp${SHAKE:+ --shake}${THROWN:+ --thrown-exits}"
     fi
     # (a time limit: a compiler that does not finish is a failure, not a wait)
     if ! timeout 600 $compile "build/tests/$name.wasm" "$f" > "build/tests/$name.build" 2>&1; then
