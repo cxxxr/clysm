@@ -69,8 +69,9 @@ together with the runtime, as a whole program: the calls between the
 systems and into the runtime are direct calls that the engine inlines, and
 the compiler sees the types and classes of everything. Loaded from fasls,
 each system is a module of its own, and no call between modules is inlined;
-built this way `bench/libs.lisp` is 0.79 times SBCL's time instead of 1.00
-and Lem's benchmarks 0.90 instead of 1.05
+built this way `bench/libs.lisp` takes 0.79 times SBCL's time instead of
+0.99, Lem's benchmarks 0.84 instead of 1.03 and `bench/apps.lisp` 1.02
+instead of 1.11
 ([docs/INTERNALS.md](docs/INTERNALS.md#applications-in-one-module-clysm-build)).
 
 ```
@@ -253,15 +254,27 @@ ahead of time (`tools/bench.sh FILE`, best of three runs; measured on
 
 | File | Programs | Geometric mean | Slowest | Fastest |
 |---|---|---|---|---|
-| `bench/suite.lisp` | 24, used for tuning | 0.76 | 1.44 | 0.08 |
-| `bench/gabriel.lisp` | 10 Gabriel benchmarks | 0.96 | 1.48 | 0.38 |
-| `bench/holdout.lisp` | 17 programs written after the tuning | 0.78 | 1.46 | 0.09 |
-| `bench/programs.lisp` | 63 more programs | 0.84 | 2.61 | 0.03 |
-| `bench/declared.lisp` | 19 programs declared for speed, at `(speed 3) (safety 0)` on both sides | 0.94 | 1.41 | 0.37 |
-| `bench/libs.lisp` | libraries from Quicklisp, loaded through ASDF (`tools/bench-libs.sh`) | 1.13 | 1.51 | 0.29 |
+| `bench/suite.lisp` | 24, used for tuning | 0.61 | 1.55 | 0.06 |
+| `bench/gabriel.lisp` | 10 Gabriel benchmarks | 0.78 | 1.13 | 0.32 |
+| `bench/holdout.lisp` | 17 programs written after the tuning | 0.66 | 1.06 | 0.07 |
+| `bench/programs.lisp` | 63 more programs | 0.67 | 1.82 | 0.02 |
+| `bench/clos.lisp` | 18 programs of generic functions, classes and `make-instance` | 0.68 | 1.08 | 0.36 |
+| `bench/control.lisp` | 30 programs of conditions, non-local exits, special variables, closures | 0.63 | 1.44 | 0.19 |
+| `bench/io.lisp` | 20 programs of `format`, the printer, the reader, streams | 0.67 | 1.60 | 0.35 |
+| `bench/library.lisp` | 32 programs of sequence, list, string and hash table functions | 0.66 | 1.65 | 0.03 |
+| `bench/alloc.lisp` | 10 programs that allocate | 0.81 | 1.74 | 0.39 |
+| `bench/declared.lisp` | 19 programs declared for speed, at `(speed 3) (safety 0)` on both sides | 0.89 | 1.36 | 0.38 |
+| `bench/libs.lisp` | libraries from Quicklisp, loaded through ASDF (`tools/bench-libs.sh`) | 0.99 | 1.37 | 0.26 |
+| `bench/apps.lisp` | 7 programs of esrap, cl-json, yason and cl-ppcre, loaded through ASDF | 1.11 | 1.54 | 0.80 |
 
 Code loaded form by form (the REPL, `load`, ASDF) is slower than a whole
-program. The slow cases and their causes are in
+program: an application loaded from fasls is about as fast as on SBCL, and
+built into one module (`clysm build`, above) faster. Lem's benchmarks
+(`tools/bench-lem.sh`: 9 of redisplay, syntax scanning and editing
+commands) take 1.03 times SBCL's time loaded and 0.84 built;
+`bench/apps.lisp` 1.11 and 1.02, `bench/libs.lisp` 0.99 and 0.79. What is still slower than SBCL (esrap's
+closures, bignum arithmetic of a few digits, strings over 128 KB, lists of
+many conses: a cons is 32 bytes) and why is in
 [docs/INTERNALS.md](docs/INTERNALS.md#performance).
 
 **Against TypeScript.** `bench/typescript/bench.ts` has 22 of these
@@ -270,25 +283,25 @@ as ordinary TypeScript: the same algorithms, sizes and repetitions, with
 classes, `Map` and typed arrays. Both run on the same Node.js 24, so both
 are compiled by V8 (`tools/bench-ts.sh`, best of three, every result the
 same; measured on 2026-11-23). Time of Clysm relative to TypeScript:
-geometric mean **0.92**.
+geometric mean **0.82**.
 
 | Benchmark | TypeScript ms | Clysm ms | Ratio |
 |---|---|---|---|
-| `d-nbody` (structures of doubles) | 1927 | 226 | 0.12 |
-| `d-tak` (declared recursion) | 465 | 77 | 0.17 |
-| `b-list` (`mapcar`, `remove-if`, `reverse` / array methods) | 401 | 118 | 0.29 |
-| `b-deriv` (symbolic differentiation, lists / arrays) | 431 | 148 | 0.34 |
-| `b-fib` | 36 | 17 | 0.47 |
-| `b-hash` (integer keys, `Map`) | 232 | 134 | 0.58 |
-| `d-fannkuch` | 172 | 137 | 0.80 |
-| `d-spectral-norm` | 138 | 138 | 1.00 |
-| `d-mandelbrot` | 177 | 177 | 1.00 |
-| `d-binary-trees` | 186 | 199 | 1.07 |
-| `b-hash-string` (string keys, `Map`) | 107 | 120 | 1.12 |
-| `b-struct` (a structure's slots / an object's fields) | 51 | 93 | 1.82 |
-| `b-matmul` (an undeclared 2-D array / arrays of arrays) | 39 | 97 | 2.49 |
-| `b-clos` (generic function / method call) | 25 | 94 | 3.76 |
-| `b-make-instance` (`make-instance` / `new`) | 1 | 51 | 51 |
+| `d-nbody` (structures of doubles) | 1725 | 191 | 0.11 |
+| `d-tak` (declared recursion) | 480 | 73 | 0.15 |
+| `b-list` (`mapcar`, `remove-if`, `reverse` / array methods) | 376 | 104 | 0.28 |
+| `b-deriv` (symbolic differentiation, lists / arrays) | 378 | 124 | 0.33 |
+| `b-fib` | 38 | 14 | 0.37 |
+| `b-hash` (integer keys, `Map`) | 212 | 122 | 0.58 |
+| `d-fannkuch` | 156 | 124 | 0.79 |
+| `d-spectral-norm` | 129 | 129 | 1.00 |
+| `d-mandelbrot` | 153 | 159 | 1.04 |
+| `d-binary-trees` | 174 | 185 | 1.06 |
+| `b-hash-string` (string keys, `Map`) | 95 | 107 | 1.13 |
+| `b-struct` (a structure's slots / an object's fields) | 48 | 87 | 1.81 |
+| `b-matmul` (an undeclared 2-D array / arrays of arrays) | 36 | 70 | 1.94 |
+| `b-clos` (generic function / method call) | 24 | 59 | 2.46 |
+| `b-make-instance` (`make-instance` / `new`) | 1 | 34 | 34 |
 
 Clysm is ahead where its compiler keeps numbers raw (V8 keeps a double
 field of a JavaScript object in a box of its own, so `d-nbody` is the
@@ -302,24 +315,27 @@ of CLOS. The other benchmarks are in the output of `tools/bench-ts.sh`.
 **Size and memory.** Every module carries the Common Lisp runtime;
 `--shake` (and `--shake-symbols`) leaves out what the program does not
 reach. Measured on 2026-11-23; peak RSS of the process, where `node -e 0`
-takes 43 MB:
+takes 41 MB:
 
 | Module | Size | `gzip -9` | Peak RSS |
 |---|---|---|---|
-| `tests/hello.lisp`, `clysm compile` | 5.2 MB | 1.40 MB | 136 MB |
-| the same, `--shake` | 2.9 MB | 0.84 MB | 87 MB |
-| a library of one export (`clysm library --shake-symbols`), imported by Node.js | 1.25 MB | 0.38 MB | 62 MB, 0.04 s to import and call |
-| the REPL image, with the compiler | 8.6 MB (+ a heap image of 10.8 MB) | 2.2 MB (+ 3.0 MB) | 129 MB |
+| `tests/hello.lisp`, `clysm compile` | 5.4 MB | 1.44 MB | 131 MB |
+| the same, `--shake` (`clysm build --shake`: the same) | 1.9 MB | 0.58 MB | 80 MB |
+| a library of one export (`clysm library --shake-symbols`), imported by Node.js | 1.27 MB | 0.39 MB | 66 MB, 0.02 s to import |
+| the REPL image, with the compiler | 8.9 MB (+ a heap image of 11.0 MB) | 2.4 MB (+ 3.0 MB) | 227 MB |
 
 Hello keeps the printer and `format`, which it uses; a library that does
-not print leaves them out. More in
+not print leaves them out. The REPL image runs with a young generation of
+up to 256 MB a space, which makes allocation cheap and counts in its peak
+(`CLYSM_NURSERY_MB` names another size). More in
 [docs/INTERNALS.md](docs/INTERNALS.md#size-and-start-up).
 
 **System fasls.** ASDF compiles each system of plain Lisp files into one
 fasl of one module (`NAME--system.fasl` in the fasl cache, instead of a fasl
 for each file) as it compiles and loads the system's files, so calls between
-the files can be inlined by the engine: esrap 1.9 → 1.8 times SBCL, Lem's
-benchmarks 1.12 → 1.06, Lem's warm load 1.5 → 1.1 s, a cache about a tenth
+the files can be inlined by the engine: esrap 2.2 → 1.5 times SBCL,
+`bench/apps.lisp` 1.21 → 1.11, Lem's benchmarks 1.09 → 1.03, Lem's warm
+load 1.5 → 1.1 s, a cache about a tenth
 smaller; the first build takes a tenth to a fifth longer. Each file is still
 compiled once, with the files before it loaded, as with a fasl of its own,
 and a redefinition of a function (at the REPL, by `trace`) is seen by the
@@ -378,12 +394,13 @@ system one even while it is edited, and `asdf::*clysm-system-fasl-modes*`
 
 ```
 $ make test          # tests/cases/*.lisp, compared with SBCL's output
-$ make test-all      # also interpreted, compiled at run time, and self-hosted
+$ make test-all      # also built into one module, interpreted, compiled at run time, and self-hosted
 $ make fixpoint      # self-compilation reaches a fixed point
 $ make ansi          # the ANSI test suite (third_party/ansi-test submodule);
                      # tests/ansi/check.sh judges the results, as GitHub Actions does
 $ make test-asdf     # a small system loaded with the bundled ASDF
 $ make test-lib      # a library compiled for JavaScript, called from JavaScript
+$ make test-static   # an application built into one module (clysm build)
 $ make test-system   # bin/clysm test with an ASDF system and its dependencies
 $ make test-threads  # green threads and Bordeaux Threads
 $ make test-swank    # the SWANK server and a client
