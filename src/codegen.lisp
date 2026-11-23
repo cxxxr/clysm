@@ -281,8 +281,15 @@ runtime (:STRING-HASH in src/prims.lisp)."
 function, innermost first.  A local exit through unwind-protect regions jumps
 to the innermost one's cleanup, which then continues the exit.")
 (defstruct uwpf code res landing (exits nil) (nexits 0) dyn-depth uwp-depth parent mv-used)
+(defvar *thrown-exits* nil
+  "True to compile every non-local exit as the Wasm exception $lisp-throw,
+the catchers taking it in their try_tables, instead of as a return with the
+exit pending: the calls are not followed by the test for a pending exit
+(smaller code; an exit costs the exception, see \"Non-local exits\" in
+docs/INTERNALS.md).  The whole program is compiled so.")
 (defvar *fexit* nil
-  "In a function being compiled: (blk tag-local value-local pctx); exits through
+  "In a function being compiled (NIL under *THROWN-EXITS*, where every exit
+out of it is thrown): (blk tag-local value-local pctx); exits through
 the function's own cleanups branch to BLK with the pending exit in the two
 locals; PCTX is the context of the calls outside every catcher (a pending
 exit returns from the function).")
@@ -2566,7 +2573,8 @@ value (in the block's representation, unless BOXED)."
 ;;; Non-local exits as returns
 ;;;
 ;;; A Wasm exception costs about 120 ns in V8 plus 33 ns per frame it
-;;; unwinds (SBCL's THROW: about 7 ns), so non-local exits are not thrown.
+;;; unwinds (SBCL's THROW: about 7 ns), so non-local exits are not thrown
+;;; (unless *THROWN-EXITS*: then they all are, and none of what follows is made).
 ;;; An exit out of a function (a THROW, a RETURN-FROM or GO out of a
 ;;; closure, SYS:%THROW of a HANDLER-CASE or RESTART-CASE) stores the tag
 ;;; and the value in the symbols SYS::%EXIT-TAG and SYS::%EXIT-VALUE (the
@@ -2631,13 +2639,15 @@ no other function exits any more (the lambdas that did were inlined) is local."
             (if (blk-p b) (setf (blk-nonlocal b) nil) (setf (tb-nonlocal b) nil))))))))
 
 (defun make-fexit (lam &optional force)
-  "The exit state of the function being compiled (*FEXIT*).  Call when *FS*
-is set up, before any code of the function is generated."
+  "The exit state of the function being compiled (*FEXIT*), NIL under
+*THROWN-EXITS*.  Call when *FS* is set up, before any code of the function
+is generated."
   (declare (ignore force))
-  (list (make-blk :name nil :lam lam :label (gensym "FEXIT") :mv t :dyn-depth 0 :uwp-depth 0
+  (unless *thrown-exits*
+   (list (make-blk :name nil :lam lam :label (gensym "FEXIT") :mv t :dyn-depth 0 :uwp-depth 0
                   :uwp-frames nil :saved-bsp (new-local :i32))
         (new-local) (new-local)
-        (make-pctx :label (gensym "FPEND") :fs *fs*)))
+        (make-pctx :label (gensym "FPEND") :fs *fs*))))
 
 (defun exit-globals-code (tag-code value-code)
   "Make the exit (TAG-CODE, VALUE-CODE: one instruction list each, without
@@ -2744,7 +2754,8 @@ function, VALUE-CODE pushing the value."
 ;;; the handler of the context of the call.
 
 (defun current-pctx ()
-  (cond ((and *pend* (eq (pctx-fs *pend*) *fs*)) *pend*)
+  (cond (*thrown-exits* nil)
+        ((and *pend* (eq (pctx-fs *pend*) *fs*)) *pend*)
         (*fexit* (fourth *fexit*))))
 
 (defun checked-call (code &optional noreturn)
@@ -4451,10 +4462,11 @@ the raw clone returning that, or NIL."
       (let ((body (if (eq rrep :eqref)
                       (wrap-fexit (finish-body lam prologue nil))
                       (let ((code `(,@(poll-code) ,@prologue ,@(cg-rep (lam-body lam) rrep))))
-                        (destructuring-bind (blk tag val ctx) *fexit*
+                        (when *fexit*
+                         (destructuring-bind (blk tag val ctx) *fexit*
                           (declare (ignore tag val))
                           (when (or (pctx-used ctx) (tree-member `(:br ,(blk-label blk)) code))
-                            (error "raw clone of ~S: an exit may be pending" (lam-name lam))))
+                            (error "raw clone of ~S: an exit may be pending" (lam-name lam)))))
                         code))))
         (add-func *m* (list :raw (lam-id lam) sig) (raw-func-type sig rrep (raw-clone-closure-p lam rrep))
                   :locals (reverse (fstate-locals *fs*))

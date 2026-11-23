@@ -16,6 +16,12 @@
 (defun check (x) (error "cannot handle ~S" x))
 (defun fails (x) (check x) x)
 
+(defun exit-through (f)
+  ;; an exit, and an error to a handler, out of Lisp called back by the
+  ;; JavaScript function F (returns or thrown, as the module was compiled)
+  (list (catch 'out (js:funcall f (lambda () (throw 'out 7))))
+        (handler-case (js:funcall f (lambda () (check 8))) (error () 9))))
+
 (defun upcase-all (array)
   ;; a JavaScript array of strings -> a new array
   (map 'vector #'string-upcase
@@ -30,6 +36,7 @@
 (js:export "calls" (lambda () *calls*) :type "() => number")
 (js:export "deep" #'deep)
 (js:export "fails" #'fails)
+(js:export "exitThrough" (lambda (f) (coerce (exit-through f) 'vector)))
 (js:export "upcaseAll" #'upcase-all :type "(items: string[]) => string[]")
 (js:export "fetchTwice" #'fetch-twice :async t :type "(f: (k: string) => Promise<string>) => Promise<string>")
 (js:export "path" (lambda () (js:call (js:require "node:path") "join" "a" "b")))
