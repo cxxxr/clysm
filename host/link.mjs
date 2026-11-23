@@ -121,6 +121,7 @@ class Mapper {
         case 0x14: case 0x15: { let t; [t, p] = readU(b, p); w.u(this.type(t)); break; }
         case 0x23: case 0x24: { let g; [g, p] = readU(b, p); w.u(this.global(g)); break; }
         case 0x28: case 0x29: case 0x2A: case 0x2B: case 0x2C: case 0x2D: case 0x2E: case 0x2F:
+        case 0x30: case 0x31: case 0x32: case 0x33: case 0x34: case 0x35:
         case 0x36: case 0x37: case 0x38: case 0x39: case 0x3A: case 0x3B: case 0x3C: case 0x3D: case 0x3E:
           p = this.copyU(p, w); p = this.copyU(p, w); break;
         case 0x3F: case 0x40: w.byte(b[p++]); break;
@@ -153,6 +154,15 @@ class Mapper {
         case 0xFC: {
           let sub; [sub, p] = readU(b, p); w.u(sub);
           if (sub > 7) throw new Error(`link: instruction 0xFC ${sub}`);
+          break;
+        }
+        case 0xFD: {   // SIMD (the bignum kernels of src/prims.lisp)
+          let sub; [sub, p] = readU(b, p); w.u(sub);
+          const memarg = () => { p = this.copyU(p, w); p = this.copyU(p, w); };
+          if (sub <= 11 || sub === 92 || sub === 93) memarg();               // loads, store
+          else if (sub === 12 || sub === 13) { w.bytes(b.subarray(p, p + 16)); p += 16; }  // const, shuffle
+          else if (sub >= 21 && sub <= 34) w.byte(b[p++]);                   // lanes
+          else if (sub >= 84 && sub <= 91) { memarg(); w.byte(b[p++]); }     // load/store lane
           break;
         }
         default:
