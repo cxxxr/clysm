@@ -37,6 +37,10 @@
 (js:export "deep" #'deep)
 (js:export "fails" #'fails)
 (js:export "exitThrough" (lambda (f) (coerce (exit-through f) 'vector)))
+;; a raw callback gets null as JavaScript has it; one that holds OBJECT
+;; (no table keeps a raw function: it is told by its name, js.lisp)
+(js:export "rawCallback" (lambda () (js:raw-function (lambda (x) (if (null x) "converted" "raw")))))
+(js:export "rawHolding" (lambda (object) (js:raw-function (lambda () (js:typeof object)))))
 (js:export "upcaseAll" #'upcase-all :type "(items: string[]) => string[]")
 (js:export "fetchTwice" #'fetch-twice :async t :type "(f: (k: string) => Promise<string>) => Promise<string>")
 (js:export "path" (lambda () (js:call (js:require "node:path") "join" "a" "b")))
