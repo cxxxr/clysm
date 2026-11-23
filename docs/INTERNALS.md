@@ -7210,6 +7210,52 @@ What makes the code fast:
   (`*static-cell-conses*`) and `const-global` keeps each its own cons;
   `tests/static` prints such lists and compares the objects.
 
+* **Similar literals are one object only within one source file
+  (2026-11-23).** A program built by `clysm build` from cl-ppcre,
+  alexandria, alexandria/tests, split-sequence and babel
+  (`MODE=static tools/bench-libs.sh`) died in `%gf-disc-valid-p`, "too many
+  elements", at the first `cl-ppcre:scan`. RT, which alexandria/tests
+  depends on, keeps its tests in `(defvar *entries* '(nil))` and puts them
+  after the first cons of that quoted list. `const-global` made that
+  `(nil)` the same cons as the last cons of every literal list of the
+  program ending in NIL, of any file: among them the method entries
+  `(qualifiers specializers function keys)` and the last cons of the record
+  of each dispatch tree (`%gf-disc-form`), so the record of
+  `cl-ppcre::flatten` had RT's test entries in the tail of a method entry.
+  Changing a literal is undefined, but libraries do it and no
+  `compile-file` would make it reach another file: CLHS 3.2.4.4 lets
+  similar literals be one object within ONE file, and a whole program is
+  many files of systems that know nothing of each other.
+  Now each literal has a scope (`*literal-scopes*`, src/frontend.lisp):
+  the source file whose form it was first seen in, noted when the form is
+  converted (`constant-node`; the function that code is generated for may
+  be of another file, a copy of an inline function), `:program` for a form
+  of no file, `:runtime` for the runtime's own. The parts of a literal are
+  of its scope (`*const-scope*`). The key of a coalesced cons has the scope
+  in it, and so has the key of a string (the strings of a program were one
+  object with the equal strings of every file and of the runtime: `fill`
+  of a literal string in a library changed them all); the same object
+  referred to from two files is still one constant. What the compiler
+  makes for itself is `:runtime` (`note-compiler-literal`: the cells and
+  the record of a dispatch tree), whose conses are never shared with
+  anything, even of the file of the generic function.
+  What remains is what `compile-file` has too: a file that changes a quoted
+  list changes the similar literals, and tails, of that same file.
+  Cost: nothing for a program of one file. The module of `tests/hello.lisp`
+  (shaken 1,915,310, whole 5,359,555 bytes) and the one-export module
+  (923,010) are the same to the byte; the program of the five libraries
+  above 9,143,809 → 9,178,671 bytes (+0.38%); `bench/clos.lisp` +2.4 KB
+  (the records' conses). The REPL image is 23 KB smaller (8,904,177 →
+  8,880,785: the function was split and the typed copies of the old one
+  are gone; the globals grew 11 KB). Times, interleaved on one slot, three
+  rounds: suite 0.61/0.61/0.62 → 0.62/0.62/0.62, programs 0.65/0.66/0.66 →
+  0.66/0.66/0.66, library 0.64 → 0.64; `p-equal` 0.85-0.87 and
+  `v-equal-trees` 0.51-0.52 on both (their literals are of one file).
+  `tests/static` changes a quoted list and a literal string of one file and
+  prints the similar ones of another after calling generic functions, and,
+  when `~/quicklisp` has them, builds and runs a program of cl-ppcre and RT
+  (`tests/static/libs.lisp`, 4 s); both died as above before.
+
 * **Adjacent hash entries (2026-11-23; experiment, reverted below).** Keys and values occupy cells
   2I and 2I+1 of one vector. Chain links and saved lookup indices still
   count entries; the former value-vector field holds capacity. Growth,

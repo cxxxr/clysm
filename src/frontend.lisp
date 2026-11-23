@@ -801,9 +801,43 @@ another literal list that ends with NIL.")
                             (clysm-sys::%call-with-fasl-syntax
                              (lambda () (values (read-from-string ,text))))))))))))
 
+;;; Literals that are similar are made one object (CONST-GLOBAL) only within
+;;; one source file, which is all that CLHS 3.2.4.4 allows of COMPILE-FILE: a
+;;; whole program is many files, of systems that know nothing of each other,
+;;; and a file that changes a quoted list of its own (undefined, but done:
+;;; (defvar *entries* '(nil)) of a test framework, then (setf (cdr *entries*)
+;;; ...)) must not change the literals of another file nor the records that
+;;; the compiler makes for its own code.  The scope of a literal is the file
+;;; whose form it was first seen in, noted when the form is converted: the
+;;; function that code is generated for may be of another file (a copy of an
+;;; inline function).
+
+(defvar *literal-scopes* nil
+  "Whole-program compilation: literal object -> its scope (an EQ table), the
+name of the source file it was first seen in, :PROGRAM (a form of the program
+that is of no file), or :RUNTIME (the runtime's own and what the compiler
+makes for itself: their conses are never shared).")
+
+(defun current-literal-scope ()
+  (if *check-declared-integers* (or (car *current-source*) :program) :runtime))
+
+(defun note-literal-scope (obj)
+  (when (and *literal-scopes* (not *live-mode*) (or (consp obj) (arrayp obj)))
+    (multiple-value-bind (scope found) (gethash obj *literal-scopes*)
+      (declare (ignore scope))
+      (unless found (setf (gethash obj *literal-scopes*) (current-literal-scope))))))
+
+(defun note-compiler-literal (obj)
+  "OBJ, a literal of code that the compiler makes (the record of a
+discriminating function), shares no cons with the literals of the program."
+  (when (and *literal-scopes* (not *live-mode*))
+    (setf (gethash obj *literal-scopes*) :runtime))
+  obj)
+
 (defun constant-node (obj env)
   "The node of the constant OBJ."
   (declare (ignorable env))
+  (note-literal-scope obj)
   (if (and (member *static-image* '(:user :loaded)) (not (or (symbolp obj) (numberp obj) (characterp obj)))
            (not (plain-constant-p obj)))
       (let ((cell (gethash obj *static-literal-cells*)) (c (gensym "CELL")))
@@ -2830,6 +2864,9 @@ NIL when there is nothing it could call."
         (let ((forms (build 0 methods nil)))
           (when (and forms (> leaves 0) (<= leaves 48))
             (let ((cells (make-array (+ 3 nfns nclasses) :initial-element 0)))
+              ;; (its record is destructured by the runtime: not a cons of
+              ;; it is one of a literal of the program, which may change it)
+              (note-compiler-literal cells)
               (setf (svref cells 0) nil
                     (svref cells 1) (list name n
                                           (mapcar (lambda (m)
