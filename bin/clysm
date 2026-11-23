@@ -55,7 +55,7 @@ NODE="${NODE:-node}"
 # compile/library --thrown-exits compiles every non-local exit (THROW, an exit
 # out of a closure, ERROR to a handler...) as a Wasm exception: no test for a
 # pending exit after each call, smaller code, but each exit costs the
-# exception (docs/INTERNALS.md, "Non-local exits").
+# exception (docs/INTERNALS.md, "Non-local exits"); not clysm build.
 NURSERY="--max-semi-space-size=${CLYSM_NURSERY_MB:-256}"
 # The compiler runs on SBCL, whose heap is 1 GB (or 8 GB, as it was built) unless it is told:
 # a large program (a system of some hundred files, with --shake) needs more than 1 GB.

@@ -18,6 +18,8 @@ assert.equal(deep(5000), 5000);
 // a stack overflow is a RangeError, after which the instance goes on
 assert.throws(() => deep(100000000), RangeError);
 assert.equal(deep(10), 10);
+// a non-local exit and an error from Lisp, through a JavaScript frame
+assert.deepEqual(lib.default.exports.exitThrough((g) => g()), [7, 9]);
 
 assert.throws(() => fails(42), (e) => e.name === 'LispError' && /cannot handle 42/.test(e.message)
                                   && /^LispError: cannot handle 42\n\s+at (CHECK|FAILS) \(tests\/lib\/demo\.lisp:1[67]\)/.test(e.stack));

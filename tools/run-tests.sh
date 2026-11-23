@@ -12,8 +12,11 @@
 # With SHAKE=1 they are compiled with --shake (the functions nothing refers
 # to are left out).
 # With THROWN=1 they are compiled with --thrown-exits (every non-local exit a
-# Wasm exception).
+# Wasm exception); only so, not with NATIVE, INTERP, STATIC or SELFHOST.
 cd "$(dirname "$0")/.." || exit 1
+if [ -n "$THROWN" ] && [ -n "$NATIVE$INTERP$STATIC$SELFHOST" ]; then
+  echo "THROWN=1 compiles with tools/build.lisp only, not with NATIVE, INTERP, STATIC or SELFHOST" >&2; exit 2
+fi
 NURSERY="--max-semi-space-size=${CLYSM_NURSERY_MB:-256}"   # as bin/clysm starts the image
 mkdir -p build/tests
 pass=0; fail=0; failed=""

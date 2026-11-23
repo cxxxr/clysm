@@ -8410,9 +8410,16 @@ in local V and the index in local K; else branch to FAIL."
 ;; (RUN is called from WebAssembly, without a JavaScript frame in between,
 ;; so that the code of the module can wait: JS:AWAIT, threads)
 (defprim clysm-sys::%compile-module (bytes consts) :mv
-  (checked-call
-   `(,@(ext-code consts) ,@(ext-code bytes) (:call :host-instantiate-module)
-     (:call_ref :x-e))))
+  (let ((run `(,@(ext-code consts) ,@(ext-code bytes) (:call :host-instantiate-module)
+               (:call_ref :x-e))))
+    (if *thrown-exits*
+        ;; (the image's compiler makes modules whose RUN returns null with
+        ;; the exit pending: thrown, as the direct stubs do)
+        (let ((ok (gensym "RUN")))
+          `((:block ,ok :eqref ,@run (:br_on_non_null ,ok)
+              (:call :exit-pending-p) (:if nil nil ((:call :throw-pending-exit)))
+              (:ref.null :eq))))
+        (checked-call run))))
 (defprim clysm-sys::%flush () :value `((:call :host-flush) ,@(nil-code)))
 
 ;;; ------------------------------------------------------------
