@@ -179,10 +179,6 @@ called from JavaScript), otherwise a JS:JS-ERROR.  Otherwise R, unconverted."
     (or (gethash string table)
         (setf (gethash string table) (cons string nil)))))
 
-;; Not copied where a literal name is used: making the JavaScript string is
-;; done once per name, and its copies were most of the code of a JS:GET of
-;; a literal name (a page library of the viewer's code: 1.51 to 1.13 MB).
-(declaim (notinline %js-name-fill))
 (defun %js-name-fill (cell)
   (setf (cdr cell) (%js-string (car cell))))
 
@@ -190,21 +186,34 @@ called from JavaScript), otherwise a JS:JS-ERROR.  Otherwise R, unconverted."
   (when *js-name-cells*
     (maphash (lambda (string cell) (declare (ignore string)) (setf (cdr cell) nil)) *js-name-cells*)))
 
-(defmacro %js-literal-name (string)
-  `(let ((cell (load-time-value (%js-name-cell ,string))))
-     (or (cdr cell) (%js-name-fill cell))))
+(declaim (not-copied %js-cell-name))
+(defun %js-cell-name (cell)
+  "The JavaScript string of CELL (%JS-NAME-CELL), made at its first use."
+  (or (cdr cell) (%js-name-fill cell)))
 
+(defmacro %js-literal-name (string)
+  ;; (one direct call where the name is used: the code of the cell's test
+  ;; and of making the string, copied into each JS:GET of a literal name,
+  ;; was most of it)
+  `(%js-cell-name (load-time-value (%js-name-cell ,string))))
+
+(declaim (not-copied %js-get-named %js-get-raw-named %js-set-named))
+(defun %js-get-named (object cell) (js:get object (%js-cell-name cell)))
+(defun %js-get-raw-named (object cell) (js:get-raw object (%js-cell-name cell)))
+(defun %js-set-named (object cell value) (js:set object (%js-cell-name cell) value))
+
+;; (a literal name: one direct call, of the object and the name's cell)
 (define-compiler-macro js:get (&whole form object key)
-  (if (stringp key) `(js:get ,object (%js-literal-name ,key)) form))
+  (if (stringp key) `(%js-get-named ,object (load-time-value (%js-name-cell ,key))) form))
 
 (define-compiler-macro js:set (&whole form object key value)
-  (if (stringp key) `(js:set ,object (%js-literal-name ,key) ,value) form))
+  (if (stringp key) `(%js-set-named ,object (load-time-value (%js-name-cell ,key)) ,value) form))
 
 (define-compiler-macro js:call (&whole form object method &rest args)
   (if (stringp method) `(js:call ,object (%js-literal-name ,method) ,@args) form))
 
 (define-compiler-macro js:get-raw (&whole form object key)
-  (if (stringp key) `(js:get-raw ,object (%js-literal-name ,key)) form))
+  (if (stringp key) `(%js-get-raw-named ,object (load-time-value (%js-name-cell ,key))) form))
 
 (define-compiler-macro js:call-raw (&whole form object method &rest args)
   (if (stringp method) `(js:call-raw ,object (%js-literal-name ,method) ,@args) form))

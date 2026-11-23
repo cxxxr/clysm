@@ -54,6 +54,10 @@ functions made from it are, for the clysm.sources section (stack traces).")
 (defvar *specials* (make-hash-table :test 'eq))
 (defvar *constants* (make-hash-table :test 'eq) "symbol -> (value)")
 (defvar *notinline* (make-hash-table :test 'eq))
+(defvar *not-copied* (make-hash-table :test 'eq)
+  "Functions proclaimed CLYSM-SYS::NOT-COPIED: called directly, as other
+known functions are, but never copied into their callers (unlike NOTINLINE,
+which also calls them through their symbols).")
 (defvar *redefinable-functions* nil
   "True while compiling files whose functions may be redefined in the running
 image: they are all NOTINLINE, so their callers go through the function cell.")

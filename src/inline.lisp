@@ -172,6 +172,7 @@ at SAFETY 1 and more, the test left out where the type of ARG decides it)."
 (defun inline-candidate (node)
   (let* ((sym (second node)) (lam (known-global-lam sym)))
     (and lam
+         (not (gethash sym *not-copied*))
          (if (lam-rest lam)
              (<= (length (lam-req lam)) (length (cddr node)) (+ (length (lam-req lam)) *inline-max-rest-args*))
              (= (length (cddr node)) (length (lam-req lam))))
@@ -224,6 +225,7 @@ constant, a variable or an IF of them."
                  (= (length (cddr node)) (length (lam-req lam)))
                  (notany #'lvar-special (lam-req lam))
                  (not (gethash sym *notinline*))
+                 (not (gethash sym *not-copied*))
                  (cheap (second body))
                  (<= (count-nodes (second body) *partial-inline-max-nodes*) *partial-inline-max-nodes*))
         (flet ((small (n) (and (leaf n) (<= (count-nodes n *partial-inline-max-nodes*) *partial-inline-max-nodes*))))
