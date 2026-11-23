@@ -28,3 +28,19 @@
                 (declare (ignore context))
                 (js:throw (js:get-raw (js:global) "__clysm_entry_sentinel") :message "initialization failed"))
               :entry "throwing")
+
+(js:entrypoint (lambda (context)
+                (incf *starts*)
+                (js:set (js:global) "__clysm_entry_checked" context))
+              :entry "checked" :errors :stderr
+              :when '(:not (:equal (:global "__clysm_skip_checked") t))
+              :checks '(((:and (:function (:global "__clysm_engine" "suspending"))
+                               (:function (:global "__clysm_engine" "promising")))
+                         (:concat "need both functions (version "
+                                  (:global "__clysm_engine" "version") ")")))
+              :load-errors '(("ENOENT" "the application Wasm file is missing")))
+(js:entrypoint (lambda (context)
+                (declare (ignore context))
+                (js:throw (js:get-raw (js:global) "__clysm_entry_sentinel") :message "initializer failed"))
+              :entry "checked-throwing"
+              :load-errors '(("ENOENT" "must not replace an initializer error")))

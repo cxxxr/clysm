@@ -606,7 +606,7 @@ ships beside the module is found from it."
         (t value)))
 
 (defun js:entrypoint (function &key entry ((:when condition) nil condition-p)
-                                  imports environment shebang errors)
+                                  imports environment shebang errors checks load-errors)
   "Register a synchronous initializer for a named entry of a lazy library.
 It runs on importing that generated entry, not while generating it. The
 function receives its entry context (url, environment and imported modules).
@@ -614,7 +614,11 @@ WHEN is a declarative predicate over globals, evaluated before loading Wasm.
 IMPORTS lists (module-specifier export-name) pairs; \"*\" means the namespace.
 ENVIRONMENT lists process.env names to capture in generated source, allowing
 a bundler to replace them. SHEBANG emits a Node executable header. ERRORS may
-be :STDERR to report a synchronous startup failure and set process.exitCode."
+be :STDERR to report a synchronous startup failure and set process.exitCode.
+CHECKS lists (predicate message) pairs, checked before loading the library
+when WHEN holds. Messages are strings or (:CONCAT ...), with (:GLOBAL ...)
+parts converted to strings. LOAD-ERRORS lists (error-code message) pairs to
+translate only failures of loading the library, not the initializer itself."
   (unless (functionp function) (%type-error function 'function))
   (unless (member errors '(nil :stderr))
     (error "JS:ENTRYPOINT: ERRORS is NIL or :STDERR"))
@@ -627,7 +631,9 @@ be :STDERR to report a synchronous startup failure and set process.exitCode."
                         "imports" (map 'vector (lambda (spec) (coerce spec 'vector)) imports)
                         "environment" (coerce environment 'vector)
                         "shebang" (if shebang t :false)
-                        "errors" (if errors "stderr" :null))))
+                        "errors" (if errors "stderr" :null)
+                        "checks" (map 'vector #'%js-entry-expression checks)
+                        "loadErrors" (map 'vector (lambda (spec) (coerce spec 'vector)) load-errors))))
   nil)
 
 (defun js:entry-context (entry)

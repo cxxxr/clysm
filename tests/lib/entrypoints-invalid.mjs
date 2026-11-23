@@ -6,6 +6,10 @@ for (const [mode, expected] of [
   ['condition', /invalid JS:ENTRYPOINT condition operator/],
   ['imports', /imports need unique module specifiers/],
   ['environment', /environment names must be unique identifiers/],
+  ['checks', /checks need predicate\/message pairs/],
+  ['message', /invalid JS:ENTRYPOINT check message/],
+  ['load-errors', /load errors need unique code\/message string pairs/],
+  ['load-duplicates', /load errors need unique code\/message string pairs/],
   ['duplicate', /more than one initializer/],
 ]) {
   const result = spawnSync(process.execPath, ['tools/gen-library.mjs', process.argv[2]], {

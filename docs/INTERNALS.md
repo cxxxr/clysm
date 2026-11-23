@@ -9770,3 +9770,13 @@ and dialogs), compiled ahead of time and in the REPL image.
 standard output with SBCL running the same file. `INTERP=1` runs the files with
 the in-image evaluator instead, and `SELFHOST=1` compiles them with the
 Wasm-hosted compiler.
+
+An entry can reject an unsupported host before loading its Wasm module with
+`:checks`, a list of `(predicate message)` pairs. Predicates use the same
+syntax as `:when`; messages are strings or `(:concat ...)` of strings and
+`(:global ...)` values converted to strings. Checks run only when the entry's
+`:when` predicate holds. They throw ordinary errors, so `:errors :stderr`
+prints a command's diagnostic and sets its exit status without loading Wasm.
+`:load-errors` lists `(code message)` string pairs to translate loader errors
+by their JavaScript `code` property. This translation covers only loading the
+library: errors thrown by the initializer itself retain their identity.
