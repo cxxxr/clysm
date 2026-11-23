@@ -422,6 +422,20 @@ signals `control-error`. A module compiled in the image returns null from
 its `run` when a form leaves with an exit pending, and `sys::%compile-module`
 tests it like a call.
 
+With `--thrown-exits` (`clysm compile`, `clysm library`, `tools/build.lisp`:
+`*thrown-exits*` in `src/codegen.lisp`) a whole program is compiled the
+other way: an exit out of a function is always the exception
+`$lisp-throw(tag, value)` that the helpers already throw, the catchers take
+it in the `try_table`s they always have, and no call is followed by the
+test for a pending exit (`make-fexit` and `current-pctx` give none). For a
+program whose exits are rare, which a page's code mostly is, the code is
+smaller: Code Map's page library, 30 files, 1,131,745 to 1,042,665 octets
+of code (−8%) and the branch hints with it; `bench/suite.lisp` is as fast
+(x0.62 to x0.60 of SBCL), but `bench/control.lisp`, made of exits, is
+slower (x0.63 to x1.14; `t-throw-closure` x12.9). The default stays the
+returns with the exit pending. `THROWN=1 tools/run-tests.sh` runs the
+tests so (a job of the CI).
+
 The handlers in effect are *frames* that stay in their places: the first
 `*handler-clusters*` (a fixnum, the depth) elements of the simple vector
 `*handler-frames*`, each a vector `#(types clause function)`. `handler-bind`

@@ -28,6 +28,9 @@ jobs:
         include:
           - name: compiled
             run: make test
+          # (--thrown-exits: every non-local exit a Wasm exception)
+          - name: compiled, exits thrown
+            run: THROWN=1 tools/run-tests.sh && THROWN=1 tests/lib/run.sh
           - name: interpreted
             run: INTERP=1 tools/run-tests.sh
           - name: compiled at run time
