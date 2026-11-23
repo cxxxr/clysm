@@ -9,12 +9,16 @@ const url = (name) => pathToFileURL(path.join(dir, name)).href;
 const wasm = path.join(dir, 'entrypoints.wasm');
 if (!mode) {
   const embedded = fs.readFileSync(path.join(dir, 'entrypoints.library.mjs'), 'utf8').includes('bytesOfBase64');
-  for (const next of ['lazy', 'worker', 'cli', 'override', 'late', 'throwing', ...(embedded ? [] : ['failure'])]) {
+  for (const next of ['lazy', 'worker', 'cli', 'override', 'late', 'throwing', 'check-pass', 'check-fail', 'check-skip', 'check-throw', ...(embedded ? [] : ['failure', 'check-load'])]) {
     const result = spawnSync(process.execPath, [import.meta.filename, dir, next], { encoding: 'utf8' });
-    assert.equal(result.status, next === 'failure' ? 1 : 0, `${next}: ${result.stdout}\n${result.stderr}`);
+    assert.equal(result.status, ['failure', 'check-fail', 'check-load'].includes(next) ? 1 : 0, `${next}: ${result.stdout}\n${result.stderr}`);
     if (next === 'failure') {
       assert.match(result.stderr, /ENOENT/);
       assert.doesNotMatch(result.stderr, /\n\s+at /);
+    } else if (next === 'check-fail') {
+      assert.equal(result.stderr, 'need both functions (version fixture.v)\n');
+    } else if (next === 'check-load') {
+      assert.equal(result.stderr, 'the application Wasm file is missing\n');
     } else assert.equal(result.stderr, '', next);
   }
   assert.match(fs.readFileSync(path.join(dir, 'cli.mjs'), 'utf8'), /^#!\/usr\/bin\/env node\n/);
@@ -77,4 +81,25 @@ if (!mode) {
 } else if (mode === 'failure') {
   fs.renameSync(wasm, `${wasm}.saved`);
   try { await import(url('cli.mjs')); } finally { fs.renameSync(`${wasm}.saved`, wasm); }
+}
+ else if (mode === 'check-pass' || mode === 'check-load') {
+  globalThis.__clysm_engine = { suspending() {}, promising() {}, version: 'fixture.v' };
+  if (mode === 'check-load') fs.renameSync(wasm, `${wasm}.saved`);
+  try { await import(url('checked.mjs')); }
+  finally { if (mode === 'check-load') fs.renameSync(`${wasm}.saved`, wasm); }
+  if (mode === 'check-pass') {
+    assert.equal((await import(url('api.mjs'))).status().starts, 1);
+    assert.equal(globalThis.__clysm_entry_checked.url, url('checked.mjs'));
+  }
+} else if (mode === 'check-fail' || mode === 'check-skip') {
+  globalThis.__clysm_engine = { suspending() {}, version: 'fixture.v' };
+  globalThis.__clysm_skip_checked = mode === 'check-skip';
+  const module = WebAssembly.Module;
+  WebAssembly.Module = class { constructor() { throw new Error('loaded Wasm before checking'); } };
+  try { await import(url('checked.mjs')); } finally { WebAssembly.Module = module; }
+  assert.equal(globalThis.__clysm_entry_checked, undefined);
+} else if (mode === 'check-throw') {
+  const sentinel = Object.assign(new Error('from the initializer'), { code: 'ENOENT' });
+  globalThis.__clysm_entry_sentinel = sentinel;
+  await assert.rejects(import(url('checked-throwing.mjs')), (error) => error === sentinel);
 }
