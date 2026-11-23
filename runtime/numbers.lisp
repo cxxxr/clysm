@@ -225,9 +225,14 @@ BITS 24 and MIN-EXPO 149: the single nearest to it, as a double (exact)."
 (defun %float-infinite-p (d)
   (and (%d= d (%d* d 2.0d0)) (not (%d= d 0.0d0))))
 
-(defun %float-result (d rank)
+(defun %float-result (d rank &optional da db)
+  "D as a float of RANK. An infinite result signals FLOATING-POINT-OVERFLOW
+unless an operand DA or DB (doubles, when given) was already infinite: SBCL
+traps an overflow, and the sum or product of an infinity is not one."
   (let ((r (if (= rank 2) (%double-to-single d) d)))
-    (when (and (%float-infinite-p (%to-double r)))
+    (when (and (%float-infinite-p (%to-double r))
+               (not (and da (%float-infinite-p da)))
+               (not (and db (%float-infinite-p db))))
       (error 'floating-point-overflow :operation nil :operands nil))
     r))
 
@@ -240,7 +245,7 @@ BITS 24 and MIN-EXPO 149: the single nearest to it, as a double (exact)."
   (let ((r (%contagion a b)))
     (cond ((= r 0) (%int-add a b))
           ((= r 1) (%ratio-add a b))
-          ((< r 4) (%float-result (%d+ (%to-double a) (%to-double b)) r))
+          ((< r 4) (let ((da (%to-double a)) (db (%to-double b))) (%float-result (%d+ da db) r da db)))
           (t (%complex-add a b)))))
 
 (defun %generic-sub (a b)
@@ -248,7 +253,7 @@ BITS 24 and MIN-EXPO 149: the single nearest to it, as a double (exact)."
   (let ((r (%contagion a b)))
     (cond ((= r 0) (%int-sub a b))
           ((= r 1) (%ratio-add a (%negate b)))
-          ((< r 4) (%float-result (%d- (%to-double a) (%to-double b)) r))
+          ((< r 4) (let ((da (%to-double a)) (db (%to-double b))) (%float-result (%d- da db) r da db)))
           (t (%complex-sub a b)))))
 
 (defun %negate (x)
@@ -271,7 +276,7 @@ BITS 24 and MIN-EXPO 149: the single nearest to it, as a double (exact)."
   (let ((r (%contagion a b)))
     (cond ((= r 0) (%int-mul a b))
           ((= r 1) (%ratio-mul a b))
-          ((< r 4) (%float-result (%d* (%to-double a) (%to-double b)) r))
+          ((< r 4) (let ((da (%to-double a)) (db (%to-double b))) (%float-result (%d* da db) r da db)))
           (t (%complex-mul a b)))))
 
 (defun %generic-div (a b)
@@ -289,7 +294,7 @@ BITS 24 and MIN-EXPO 149: the single nearest to it, as a double (exact)."
                             'floating-point-invalid-operation
                             'division-by-zero)
                         :operation '/ :operands (list a b))))
-             (%float-result (%d/ (%to-double a) db) r)))
+             (let ((da (%to-double a))) (%float-result (%d/ da db) r da db))))
           (t (%complex-div a b)))))
 
 (defun %exact-compare-p (a b)
@@ -307,6 +312,14 @@ converts to a double exactly, so only bignums and ratios need it."
           ((= r 0) (< (%int-cmp a b) 0))
           ((= r 1) (< (%int-cmp (* (numerator a) (denominator b)) (* (numerator b) (denominator a))) 0))
           ((< r 4) (%d< (%to-double a) (%to-double b)))
+          (t (%type-error (if (complexp a) a b) 'real)))))
+
+(defun %generic-le (a b)
+  (let ((r (%contagion a b)))
+    (cond ((and (< r 4) (%exact-compare-p a b)) (<= (rational a) (rational b)))
+          ((= r 0) (<= (%int-cmp a b) 0))
+          ((= r 1) (<= (%int-cmp (* (numerator a) (denominator b)) (* (numerator b) (denominator a))) 0))
+          ((< r 4) (%d<= (%to-double a) (%to-double b)))
           (t (%type-error (if (complexp a) a b) 'real)))))
 
 (defun %generic-num-eq (a b)

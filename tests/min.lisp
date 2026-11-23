@@ -8,6 +8,7 @@
 (defun sys::%generic-sub (a b) (sys::%exit 14))
 (defun sys::%generic-mul (a b) (sys::%exit 14))
 (defun sys::%generic-lt (a b) (sys::%exit 14))
+(defun sys::%generic-le (a b) (sys::%exit 14))
 (defun sys::%generic-num-eq (a b) (sys::%exit 14))
 (defun write-fixnum (n)
   (if (< n 10)
