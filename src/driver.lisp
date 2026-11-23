@@ -1017,14 +1017,20 @@ left out, for an error when they are looked up (*%DROPPED-SYMBOLS* in
 runtime/package.lisp): those of COMMON-LISP and of the packages the program
 made (those of the runtime, but COMMON-LISP-USER, are its own), whose names
 are DATA-NAMED-SYMBOL-P.  For each, its package's index plus 1, 1 if it is
-external (else 0), the length of its name and its characters."
+external (else 0), the length of its name and its characters. A package
+index of 255 escapes an unsigned LEB128 index immediately after that octet."
   (let ((out (make-array 0 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0)))
     (dolist (s syms)
       (let ((pn (symbol-target-package-name s)))
         (when (and pn (data-named-symbol-p s)
                    (or (member pn '("COMMON-LISP" "COMMON-LISP-USER") :test #'string=)
                        (not (member pn *runtime-package-names* :test #'string=))))
-          (vector-push-extend (1+ (funcall pkg-index pn)) out)
+          (let ((pidx (1+ (funcall pkg-index pn))))
+            (vector-push-extend (min pidx 255) out)
+            (when (>= pidx 255)
+              (loop for rest = pidx then (ash rest -7)
+                    do (vector-push-extend (logior (logand rest 127) (if (> rest 127) 128 0)) out)
+                    while (> rest 127))))
           (vector-push-extend (if (eq (nth-value 1 (find-symbol (symbol-name s) (symbol-package s))) :external) 1 0)
                               out)
           (vector-push-extend (length (symbol-name s)) out)

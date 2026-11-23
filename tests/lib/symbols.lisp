@@ -34,3 +34,21 @@
                         (format nil "~S ~S" s status))))
 (js:export "internNew" (lambda (name) (symbol-name (intern (string-upcase name) :cl-user))))
 (js:export "symbolCount" (lambda () (let ((n 0)) (do-all-symbols (s) (declare (ignore s)) (incf n)) n)))
+
+
+;; Keep a symbol from each package; shake away another function in each.
+;; Both the live-symbol table and the dropped-name diagnostics exceed 255.
+(defmacro many-symbol-packages ()
+  `(progn ,@(loop for i below 300 collect
+              `(defpackage ,(format nil "SHAKE-~D" i) (:use :cl) (:export #:kept)))))
+(many-symbol-packages)
+(defmacro many-symbol-values ()
+  `(progn
+     ,@(loop for i below 300
+             for package = (find-package (format nil "SHAKE-~D" i))
+             collect `(defun ,(intern "DROPPED" package) () ,i))
+     (js:export "largePackageSymbols"
+       (lambda ()
+         (length (list ,@(loop for i below 300
+                              collect `',(intern "KEPT" (find-package (format nil "SHAKE-~D" i))))))))))
+(many-symbol-values)
