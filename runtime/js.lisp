@@ -179,6 +179,10 @@ called from JavaScript), otherwise a JS:JS-ERROR.  Otherwise R, unconverted."
     (or (gethash string table)
         (setf (gethash string table) (cons string nil)))))
 
+;; Not copied where a literal name is used: making the JavaScript string is
+;; done once per name, and its copies were most of the code of a JS:GET of
+;; a literal name (a page library of the viewer's code: 1.51 to 1.13 MB).
+(declaim (notinline %js-name-fill))
 (defun %js-name-fill (cell)
   (setf (cdr cell) (%js-string (car cell))))
 
