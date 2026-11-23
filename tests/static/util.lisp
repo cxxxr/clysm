@@ -38,3 +38,14 @@
 (defun tolerance () 1/1000)
 (defun within-tolerance-p (x) (< (abs x) (tolerance)))
 (export 'within-tolerance-p)
+
+;;; a quoted list and a literal string that their file changes in place
+;;; (undefined, but libraries do: the test database of RT is (defvar
+;;; *entries* '(nil)) with the tests put after its first cons): the literals
+;;; of other files that look the same stay as they were written, and so do
+;;; the records of the generic functions, which end the same way
+(defvar *journal* '(nil))
+(defun journal (x) (setf (cdr (last *journal*)) (list x)) (length *journal*))
+(defvar *scratch* "scratch buffer")
+(defun scratch (c) (fill *scratch* c))
+(journal :loaded)

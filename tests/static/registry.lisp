@@ -9,3 +9,6 @@
 (defshape slab rect :w 3 :h 4)
 
 (defun shape (name) (or (gethash name *shapes*) (error "no shape ~S" name)))
+
+;;; literals like those that tests/static/util.lisp changes in place
+(defun journal-like () (list '(nil) '(:a nil) "scratch buffer"))

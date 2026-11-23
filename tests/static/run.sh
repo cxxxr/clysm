@@ -34,4 +34,16 @@ CLYSM_NO_HEAP_IMAGE=1 bin/clysm exec $out/geom-image.wasm > $out/run-noimage.out
 if ! cmp -s tests/static/run.expected $out/run-image.out || ! cmp -s tests/static/run.expected $out/run-noimage.out; then
   diff tests/static/run.expected $out/run-image.out; cat $out/run-image.err; echo "static: FAIL (--image)"; exit 1
 fi
+# a program of libraries (tests/static/libs.lisp), when Quicklisp is installed with them
+ql="$HOME/quicklisp/dists/quicklisp/software"
+if [ -f "$HOME/quicklisp/setup.lisp" ] && ls -d "$ql"/cl-ppcre-* "$ql"/rt-* >/dev/null 2>&1; then
+  bin/clysm build --system cl-ppcre --system rt tests/static/libs.lisp --main static-libs::main \
+      -o $out/libs.wasm > $out/build-libs.log 2>&1 || { cat $out/build-libs.log; echo "static: the build of the libraries failed"; exit 1; }
+  bin/clysm exec $out/libs.wasm > $out/run-libs.out 2> $out/run-libs.err
+  if ! cmp -s tests/static/libs.expected $out/run-libs.out; then
+    diff tests/static/libs.expected $out/run-libs.out; cat $out/run-libs.err; echo "static: FAIL (libraries)"; exit 1
+  fi
+else
+  echo "static: no cl-ppcre and rt in ~/quicklisp: the program of libraries is not built"
+fi
 echo "static: ok"

@@ -136,6 +136,22 @@ runtime (:STRING-HASH in src/prims.lisp)."
 (defun data-string-p (s)
   (and (simple-string-p s) (every (lambda (c) (< (char-code c) 256)) s)))
 
+;;; Similar literals are one object only within a scope (*LITERAL-SCOPES*,
+;;; src/frontend.lisp): a source file of the program.  What a literal
+;;; contains is of its scope.
+(defvar *const-scope* nil "The scope of the literal that CONST-GLOBAL is making the parts of, or NIL.")
+
+(defun literal-scope (obj)
+  ;; (what the compiler's own literal contains is its own, even an object
+  ;; that the program's code refers to as well)
+  (or (and (eq *const-scope* :runtime) :runtime)
+      (and *literal-scopes* (gethash obj *literal-scopes*))
+      *const-scope*
+      (let ((lam (and *fs* (fstate-lam *fs*))))
+        (if (and (lam-p lam) (lam-program-p lam))
+            (or (car (lam-source lam)) :program)
+            :runtime))))
+
 (defun const-global (obj)
   (when *live-mode*
     ;; the constant is the live object itself, passed in at instantiation
@@ -144,47 +160,61 @@ runtime (:STRING-HASH in src/prims.lisp)."
           (let ((name (list :lconst (incf *const-counter*))))
             (push (cons name obj) *live-constants*)
             (setf (gethash obj *const-table*) name)))))
-  (let ((table (if (stringp obj) *const-string-table* *const-table*)))
+  (or (gethash obj *const-table*)
+      (let ((*const-scope* (literal-scope obj)))
+        (const-global-1 obj))))
+
+(defun const-global-1 (obj)
+  ;; (a string: the same object is one constant wherever it is referred to
+  ;; from, *CONST-TABLE*; one equal to it of the same scope is that one too)
+  (let ((table (if (stringp obj) *const-string-table* *const-table*))
+        (obj-key (if (stringp obj) (cons *const-scope* obj) obj)))
+    (flet ((note (name)
+             (when (stringp obj) (setf (gethash obj *const-table*) name))
+             (setf (gethash obj-key table) name)))
     ;; a long list: its conses from the last one, so that the one of each
     ;; is made with the rest there (not in a recursion as deep as the list)
-    (when (and (consp obj) (consp (cdr obj)) (not (gethash obj table)) (not (long-constant-p obj)))
+    (when (and (consp obj) (consp (cdr obj)) (not (long-constant-p obj)))
       (let ((cells nil) (n 0))
         (do ((l (cdr obj) (cdr l)))
             ((or (atom l) (gethash l table) (> n 100000)))
           (push l cells) (incf n))
         (when (> n 100)
           (dolist (c cells) (const-global c)))))
-    (when (and (not (gethash obj table)) (long-constant-p obj))
+    (when (and (not (gethash obj-key table)) (long-constant-p obj))
       (let ((name (list :rconst (incf *const-counter*))))
-        (setf (gethash obj table) name)
+        (note name)
         (push (list name (runtime-const-code obj)) *runtime-consts*)
-        (return-from const-global name)))
-    (when (and (stringp obj) (not (gethash obj table)) (data-string-p obj))
+        (return-from const-global-1 name)))
+    (when (and (stringp obj) (not (gethash obj-key table)) (data-string-p obj))
       (let ((name (new-const-global `((:i32.const ,(length obj)) (:array.new_default :string)))))
         (push (cons name obj) *data-strings*)
-        (return-from const-global (setf (gethash obj table) name))))
+        (return-from const-global-1 (note name))))
     ;; A list equal to one made already (its car and its cdr are the same
-    ;; constants) is that one: literals that are similar in one compilation
-    ;; are one object (as the strings are; SBCL's fasl dumper does the
-    ;; same), so that EQUAL, TREE-EQUAL and EQUALP of them are settled by EQ.
-    ;; Only in a module compiled from files (a whole program, a library:
-    ;; CLHS 3.2.4.4 allows it of COMPILE-FILE; code loaded or evaluated in
-    ;; the image is live, above, and keeps each literal), and not in the
-    ;; runtime's own code, which keeps state in quoted conses; nor is the
-    ;; cell of an object made when the program runs (CONSTANT-NODE), which
-    ;; the program's code changes: each is its own cons.
+    ;; constants) is that one: literals that are similar in one file are one
+    ;; object (as the strings are; SBCL's fasl dumper does the same), so
+    ;; that EQUAL, TREE-EQUAL and EQUALP of them are settled by EQ.  Only in
+    ;; a module compiled from files (a whole program, a library: CLHS
+    ;; 3.2.4.4 allows it of COMPILE-FILE, of the literals of ONE file; code
+    ;; loaded or evaluated in the image is live, above, and keeps each
+    ;; literal), and not in the runtime's own code, which keeps state in
+    ;; quoted conses, nor in what the compiler makes for the program (the
+    ;; scope :RUNTIME); nor is the cell of an object made when the program
+    ;; runs (CONSTANT-NODE), which the program's code changes: each is its
+    ;; own cons.
     (when (and (consp obj) (not (gethash obj table))
+               (not (eq *const-scope* :runtime))
                (not (and *static-cell-conses* (gethash obj *static-cell-conses*)))
                *fs* (lam-p (fstate-lam *fs*)) (lam-program-p (fstate-lam *fs*)))
-      (let* ((key (list :cons (const-init-code (car obj)) (const-init-code (cdr obj))))
+      (let* ((key (list :cons *const-scope* (const-init-code (car obj)) (const-init-code (cdr obj))))
              (same (gethash key *const-string-table*)))
         (if same
-            (return-from const-global (setf (gethash obj table) same))
-            (let ((name (new-const-global `(,@(second key) ,@(third key) (:struct.new :cons)))))
+            (return-from const-global-1 (setf (gethash obj table) same))
+            (let ((name (new-const-global `(,@(third key) ,@(fourth key) (:struct.new :cons)))))
               (setf (gethash key *const-string-table*) name)
-              (return-from const-global (setf (gethash obj table) name))))))
-    (or (gethash obj table)
-        (setf (gethash obj table)
+              (return-from const-global-1 (setf (gethash obj table) name))))))
+    (or (gethash obj-key table)
+        (note
               (new-const-global
                (typecase obj
                  (integer (if (typep obj '(signed-byte 64))
@@ -229,7 +259,7 @@ runtime (:STRING-HASH in src/prims.lisp)."
                  (t (error "cannot compile constant ~S" obj)))
                ;; a simple vector of its type (an element read only checks
                ;; the bounds: the caches of call sites of readers)
-               (if (simple-vector-p obj) '(:ref :vector) :eqref))))))
+               (if (simple-vector-p obj) '(:ref :vector) :eqref)))))))
 
 (defun cg-const (obj) (const-init-code obj))
 

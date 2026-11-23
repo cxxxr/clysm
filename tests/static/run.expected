@@ -12,4 +12,7 @@ found AREA 49
 within NIL T
 error: no shape "cube"
 literals ((NIL) (1 2 NIL) ((NIL))) NIL NIL NIL
+journal (NIL :LOADED 1) "**************"
+others ((NIL) (:A NIL) "scratch buffer")
+areas 24550
 static

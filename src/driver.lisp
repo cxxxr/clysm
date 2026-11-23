@@ -50,6 +50,7 @@ modules compiled in it import (*LIVE-IMPORTED-HELPERS*).")
         *const-table* (make-hash-table :test 'eql)
         *const-string-table* (make-hash-table :test 'equal)
         *data-strings* nil
+        *literal-scopes* (make-hash-table :test 'eq)
         *const-counter* 0
         *closure-globals* nil
         *closure-global-names* (make-hash-table :test 'equal)

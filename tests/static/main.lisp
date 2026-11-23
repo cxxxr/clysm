@@ -26,4 +26,11 @@
   ;; literal lists that end as their cells began are as they were written
   (format t "literals ~S ~S ~S ~S~%" (plain-lists) (eq (origin-tag) (first (tags)))
           (eq (first (tags)) (fourth (tags))) (equal (geom-util::octets) (geom-util::home)))
+  ;; a file that changes its own literals changes no other file's, nor the
+  ;; generic functions (called often enough for their dispatch to be checked)
+  (geom-util::journal 1) (geom-util::scratch #\*)
+  (format t "journal ~S ~S~%others ~S~%areas ~S~%" geom-util::*journal* geom-util::*scratch* (journal-like)
+          (let ((sum 0))
+            (dotimes (i 20 sum)
+              (incf sum (+ (area (shape "disc")) (length (describe-thing (shape "slab"))) (length (describe-thing i)))))))
   #+clysm-static (format t "static~%"))
