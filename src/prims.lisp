@@ -1011,8 +1011,8 @@ fixnum, the code pushing it as an i32 and the code pushing it as an object
 (defprim 1- (a) :value (inline-fixnum-op a (fixnum-code 1) :i32.sub :sub))
 (defprim < (a b) :test (inline-fixnum-cmp a b :i32.lt_s '((:call :lt))))
 (defprim > (a b) :test (inline-fixnum-cmp a b :i32.gt_s '((:call :lt)) t))
-(defprim <= (a b) :test (inline-fixnum-cmp a b :i32.le_s '((:call :lt) :i32.eqz) t))
-(defprim >= (a b) :test (inline-fixnum-cmp a b :i32.ge_s '((:call :lt) :i32.eqz)))
+(defprim <= (a b) :test (inline-fixnum-cmp a b :i32.le_s '((:call :le))))
+(defprim >= (a b) :test (inline-fixnum-cmp a b :i32.ge_s '((:call :le)) t))
 (defprim = (a b) :test (inline-fixnum-cmp a b :i32.eq '((:call :num-eq))))
 (defprim /= (a b) :test (inline-fixnum-cmp a b :i32.ne '((:call :num-eq) :i32.eqz)))
 (defprim zerop (a) :test (inline-fixnum-cmp a (fixnum-code 0) :i32.eq '((:call :num-eq))))
@@ -5550,6 +5550,13 @@ f64s in locals DA and DB (it may branch to SLOW)."
   '(:local.get 0)
   `(:global.get ,(sym-global 'clysm-sys::%negate)) '(:call (:callsym 1)))
 
+(defun sign-test-code (iop)
+  "Whether the -1, 0 or 1 of a three-way comparison answers IOP's question."
+  (ecase iop
+    (:i64.lt_s '((:i32.const 0) :i32.lt_s))
+    (:i64.le_s '((:i32.const 0) :i32.le_s))
+    (:i64.eq '(:i32.eqz))))
+
 (defun compare-helper-body (iop fop lisp-fn)
   ;; a comparison of an integer with a float is exact (CLHS 12.1.4.1): an
   ;; integer beyond 2^53 goes to the Lisp function
@@ -5558,13 +5565,13 @@ f64s in locals DA and DB (it may branch to SLOW)."
              (:if nil nil
                   ((:local.get ,x) (:i64.const ,(expt 2 53)) :i64.add (:i64.const ,(expt 2 54)) :i64.gt_u (:br_if slow)
                    (:local.get ,x) :f64.convert_i64_s (:local.set ,d))))))
-    `(,@(fixnum-pair-code `((:local.get x) (:local.get y) ,(if (eq iop :i64.lt_s) :i32.lt_s :i32.eq) :return))
+    `(,@(fixnum-pair-code `((:local.get x) (:local.get y) ,(ecase iop (:i64.lt_s :i32.lt_s) (:i64.le_s :i32.le_s) (:i64.eq :i32.eq)) :return))
       ;; integers of which one is a bignum of digits: signs, then digits
       (:block notbig nil
         (:local.get 0) (:ref.test :ibox) (:local.get 0) (:ref.test :bignum) :i32.or (:local.get 1) (:ref.test :ibox) (:local.get 1) (:ref.test :bignum) :i32.or :i32.or :i32.eqz (:br_if notbig)
         (:local.get 0) (:call :integerp) (:local.get 1) (:call :integerp) :i32.and :i32.eqz (:br_if notbig)
         (:local.get 0) (:local.get 1) ,@(lisp-call-instrs 'clysm-sys::%int-cmp-big 2) (:ref.cast :i31) :i31.get_s
-        ,@(if (eq iop :i64.lt_s) '((:i32.const 0) :i32.lt_s) '(:i32.eqz)) :return)
+        ,@(sign-test-code iop) :return)
       (:block slow nil
         ,@(num-decode-code 0 'xa 'da 'ka 'slow)
         ,@(num-decode-code 1 'xb 'db 'kb 'slow)
@@ -5575,7 +5582,7 @@ f64s in locals DA and DB (it may branch to SLOW)."
         (:local.get da) (:local.get db) ,fop :return)
       ;; rationals with small components
       (:local.get 0) (:local.get 1) (:call :ratio-cmp) (:local.tee x) (:i32.const 2) :i32.ne
-      (:if nil nil ((:local.get x) ,@(if (eq iop :i64.lt_s) '((:i32.const 0) :i32.lt_s) '(:i32.eqz)) :return))
+      (:if nil nil ((:local.get x) ,@(sign-test-code iop) :return))
       (:local.get 0) (:local.get 1)
       (:global.get ,(sym-global lisp-fn)) (:call (:callsym 2))
       ,(car (nil-code)) :ref.eq :i32.eqz)))
@@ -5587,13 +5594,20 @@ f64s in locals DA and DB (it may branch to SLOW)."
     (:block slow nil
       ,@(num-decode-code 0 'xa nil 'ka 'slow nil)
       ,@(num-decode-code 1 'xb nil 'ka 'slow nil)
-      (:local.get xa) (:local.get xb) ,(if (eq iop :i32.lt_s) :i64.lt_s :i64.eq) :return)
+      (:local.get xa) (:local.get xb) ,(ecase iop (:i32.lt_s :i64.lt_s) (:i32.le_s :i64.le_s) (:i32.eq :i64.eq)) :return)
     (:local.get 0) (:local.get 1) (:return_call ,gen)))
 
 (defhelper :lt-gen :ee-i ((x :i32) (y :i32) (v :i32) (xa :i64) (xb :i64) (ka :i32) (kb :i32) (da :f64) (db :f64))
   (cons :progn-marker (compare-helper-body :i64.lt_s :f64.lt 'clysm-sys::%generic-lt)))
 (defhelper :lt :ee-i ((x :i32) (y :i32) (v :i32) (da :f64) (db :f64) (xa :i64) (xb :i64) (ka :i32))
   (cons :progn-marker (compare-front-body :i32.lt_s :f64.lt :lt-gen)))
+
+;; <= is its own comparison, not the negation of >: no comparison with a NaN
+;; is true (IEEE 754), so (<= x NaN) and (>= x NaN) are false as < and > are.
+(defhelper :le-gen :ee-i ((x :i32) (y :i32) (v :i32) (xa :i64) (xb :i64) (ka :i32) (kb :i32) (da :f64) (db :f64))
+  (cons :progn-marker (compare-helper-body :i64.le_s :f64.le 'clysm-sys::%generic-le)))
+(defhelper :le :ee-i ((x :i32) (y :i32) (v :i32) (da :f64) (db :f64) (xa :i64) (xb :i64) (ka :i32))
+  (cons :progn-marker (compare-front-body :i32.le_s :f64.le :le-gen)))
 
 (defhelper :num-eq-gen :ee-i ((x :i32) (y :i32) (v :i32) (xa :i64) (xb :i64) (ka :i32) (kb :i32) (da :f64) (db :f64))
   (cons :progn-marker (compare-helper-body :i64.eq :f64.eq 'clysm-sys::%generic-num-eq)))
