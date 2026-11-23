@@ -2278,6 +2278,14 @@ JavaScript written for it (`tests/lib/package.lisp`):
   eager and lazy libraries; `useLibrary` still accepts uncompressed Wasm
   bytes or a compiled module. Compression defaults to NIL and requires
   EMBED. Only compressed libraries copy the decoder and its license.
+- `:compression :xz` is another embedded option. Generating the library
+  requires `xz` on PATH (level 9, CRC32); running it does not. The synchronous
+  web loader embeds xzwasm 0.1.2's 12,529-byte decoder, with its licenses and
+  source provenance. It creates the decoder on first use, preserves names
+  and source locations in the application module, and accepts uncompressed
+  `useLibrary` overrides just like gzip. It imports no Node module and uses
+  no fetch, eval or JSPI. Invalid, truncated or trailing input is rejected;
+  each decode releases its native context, including on error.
 - `(js:library-options :embed t)`: the modules hold the module's bytes (in
   base64) and load it with `host/web/lib.mjs`, which imports no module of
   Node.js: a library for a page, a browser's worker or Electron's renderer,

@@ -8,6 +8,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { gzipSync } from 'node:zlib';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { load } from '../host/lib.mjs';
 
@@ -207,9 +208,24 @@ const locationHelper = locations.length ? `import { existsSync as __clysm_exists
 const __clysm_locations = ${JSON.stringify(locations)}.map((p) => new URL(p, import.meta.url));
 const __clysm_module_file = () => __clysm_locations.find((p) => __clysm_exists(p)) ?? __clysm_locations[0];
 ` : '';
-const compressed = embed && info.options?.compression === 'gzip';
-const embedded = embed ? (compressed ? gzipSync(compiled, { level: 9 }) : compiled).toString('base64') : null;
-const embeddedHost = compressed ? './clysm/web/compressed.mjs' : './clysm/web/lib.mjs';
+const compression = info.options?.compression ?? null;
+if (compression !== null && (!embed || !['gzip', 'xz'].includes(compression))) {
+  throw new Error('library compression must be gzip or xz with embed');
+}
+let packed = compiled;
+if (compression === 'gzip') packed = gzipSync(compiled, { level: 9 });
+if (compression === 'xz') {
+  const result = spawnSync('xz', ['--compress', '--stdout', '--check=crc32', '-9'],
+    { input: compiled, maxBuffer: Math.max(1024 * 1024, compiled.length * 2) });
+  if (result.error || result.status !== 0) {
+    throw new Error(`XZ library compression requires a working xz command: ${result.error?.message ?? result.stderr.toString()}`);
+  }
+  packed = result.stdout;
+}
+const embedded = embed ? packed.toString('base64') : null;
+const compressionLabel = compression === 'gzip' ? 'gzipped then ' : compression === 'xz' ? 'XZ-compressed then ' : '';
+const embeddedHost = compression === 'xz' ? './clysm/web/xz.mjs'
+  : compression === 'gzip' ? './clysm/web/compressed.mjs' : './clysm/web/lib.mjs';
 const loaderImport = embed
   ? `import { bytesOfBase64, loadSync } from '${embeddedHost}';`
   : "import { loadSync } from './clysm/lib.mjs';";
@@ -238,7 +254,7 @@ if (info.options?.lazy) {
 ${loaderImport}
 ${locationHelper}import { makeClass } from './clysm/jsffi.mjs';
 
-${embed ? `// The module, ${compressed ? 'gzipped then ' : ''}in base64 (${compiled.length} decoded bytes, with the names of its functions).\nconst embedded = '${embedded}';\nlet source = null;` : (locations.length ? 'let source = null;' : `let source = new URL('./${name}.wasm', import.meta.url);`)}
+${embed ? `// The module, ${compressionLabel}in base64 (${compiled.length} decoded bytes, with the names of its functions).\nconst embedded = '${embedded}';\nlet source = null;` : (locations.length ? 'let source = null;' : `let source = new URL('./${name}.wasm', import.meta.url);`)}
 let given = {};
 let lib = null;
 ${embed ? `const __clysm_defaults = ${embeddedOptions};\n` : outputOptions}
@@ -329,7 +345,7 @@ export {};
 ${embed ? `import { moduleOfBase64 as __clysm_module_of, loadSync as __clysm_load } from '${embeddedHost}';
 
 const __clysm_defaults = ${embeddedOptions};
-// The module, ${compressed ? 'gzipped then ' : ''}in base64 (${compiled.length} decoded bytes, with the names of its functions).
+// The module, ${compressionLabel}in base64 (${compiled.length} decoded bytes, with the names of its functions).
 const __clysm_module = __clysm_module_of('${embedded}');
 const __clysm_lib = __clysm_load(__clysm_module, __clysm_defaults);
 export const create = async (options) => __clysm_load(__clysm_module, { ...__clysm_defaults, ...options });` : `import { load as __clysm_load } from './clysm/lib.mjs';
@@ -385,7 +401,8 @@ for (const r of reexports) {
 
 // (an embedded library's host is of the web alone: no module of Node.js is imported)
 const hostFiles = embed ? ['common.mjs', 'jsffi.mjs', 'web/lib.mjs'] : ['common.mjs', 'jsffi.mjs', 'lib.mjs', 'worker.mjs', 'process.mjs'];
-if (compressed) hostFiles.push('web/compressed.mjs', 'web/vendor/fflate.mjs', 'web/vendor/fflate.LICENSE', 'web/vendor/README.md');
+if (compression === 'gzip') hostFiles.push('web/compressed.mjs', 'web/vendor/fflate.mjs', 'web/vendor/fflate.LICENSE', 'web/vendor/README.md');
+if (compression === 'xz') hostFiles.push('web/xz.mjs', 'web/vendor/xzwasm.mjs', 'web/vendor/xzwasm.LICENSE', 'web/vendor/xzwasm.README.md');
 for (const f of hostFiles) {
   fs.mkdirSync(path.dirname(path.join(dir, 'clysm', f)), { recursive: true });
   if (fs.existsSync(path.join(hostDir, f))) fs.copyFileSync(path.join(hostDir, f), path.join(dir, 'clysm', f));
