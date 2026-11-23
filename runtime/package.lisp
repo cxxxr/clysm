@@ -683,10 +683,11 @@ which leaves out the symbols that its code does not refer to"
 ;;; TABLES: (symtab pkgtab info . dropped).  SYMTAB is a vector of vectors
 ;;; of the symbols, INFO three octets a symbol in the same order
 ;;; (SYMBOL-TABLE-DATA in src/driver.lisp): its package's index in PKGTAB
-;;; plus 1 (0: none), its flags (1: external) and the length of its name.
+;;; plus 1 (0: none, 255: unsigned LEB128 index in the tail after all
+;;; three-octet records), its flags (1: external) and the length of its name.
 ;;; DROPPED: see *%DROPPED-SYMBOLS*.
 (defun %init-packages (tables)
-  (let ((symtab (car tables)) (pkgtab (cadr tables)) (info (caddr tables)) (dropped (cdddr tables)) (k 0))
+  (let ((symtab (car tables)) (pkgtab (cadr tables)) (info (caddr tables)) (dropped (cdddr tables)) (k 0) (overflow 0))
     (setq *package-table* (make-hash-table :test 'equal))
     (let ((pkgs (%make-simple-vector (%svlength pkgtab) nil)))
       (dotimes (i (%svlength pkgtab))
@@ -703,11 +704,19 @@ which leaves out the symbols that its code does not refer to"
       (when dropped
         (setq *%dropped-symbols* dropped *%dropped-symbol-packages* pkgs))
       (dotimes (chunk-index (%svlength symtab))
+        (setq overflow (+ overflow (* 3 (%svlength (%svref symtab chunk-index))))))
+      (dotimes (chunk-index (%svlength symtab))
        (let ((chunk (%svref symtab chunk-index)))
         (do ((i 0 (+ i 1))) ((>= i (%svlength chunk)))
-        (let ((sym (%svref chunk i)) (pidx (- (%bytes-ref info (* 3 k)) 1))
+        (let ((sym (%svref chunk i)) (pidx (%bytes-ref info (* 3 k)))
               (ext (oddp (%bytes-ref info (+ (* 3 k) 1)))))
           (setq k (+ k 1))
+          (when (= pidx 255)
+            (setq pidx 0)
+            (do ((shift 0 (+ shift 7)) (octet 128)) ((< octet 128))
+              (setq octet (%bytes-ref info overflow) overflow (+ overflow 1))
+              (setq pidx (logior pidx (ash (logand octet 127) shift)))))
+          (setq pidx (- pidx 1))
           (when (>= pidx 0)
             (let ((p (%svref pkgs pidx)))
               (%set-symbol-package sym p)
