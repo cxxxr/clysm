@@ -321,7 +321,7 @@ takes 41 MB:
 |---|---|---|---|
 | `tests/hello.lisp`, `clysm compile` | 5.4 MB | 1.44 MB | 131 MB |
 | the same, `--shake` (`clysm build --shake`: the same) | 1.9 MB | 0.58 MB | 80 MB |
-| a library of one export (`clysm library --shake-symbols`), imported by Node.js | 1.27 MB | 0.39 MB | 66 MB, 0.02 s to import |
+| a library of one export (`clysm library --shake-symbols`), imported by Node.js | 0.75 MB | 0.25 MB | 61 MB, 0.02 s to import |
 | the REPL image, with the compiler | 8.9 MB (+ a heap image of 11.0 MB) | 2.4 MB (+ 3.0 MB) | 227 MB |
 
 Hello keeps the printer and `format`, which it uses; a library that does

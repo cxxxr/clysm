@@ -312,7 +312,7 @@ refers to (PH-CLASS-DATA-OBJECTS), with its value and properties but not
 its function, unless something else refers to it."
   (unless (gethash j *ph-data-symbols*)
     (setf (gethash j *ph-data-symbols*) t (gethash j *ph-kept-symbols*) t)
-    (when *shake-symbols* (funcall *shake-mark* :global (list :sym (ph-base-symbol j))))
+    (when *shake-symbols* (funcall *shake-mark* :data-global (list :sym (ph-base-symbol j))))
     (ph-mark j 1)
     (unless (ph-symbol-reached-p j) (ph-symbol-named j nil))))
 

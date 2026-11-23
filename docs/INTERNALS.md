@@ -8081,7 +8081,7 @@ best of three; `node -e 0` takes 43 MB and 0.01 s):
 | the same, `--shake` | 2.9 MB | 0.84 MB | 87 MB |
 | the same, `--shake-symbols` | 2.9 MB | 0.84 MB | |
 | a library of one export, `(+ a b)` (`clysm library`, imported by Node.js) | 4.9 MB | 1.28 MB | 121 MB (0.16 s) |
-| the same, `--shake-symbols` | 1.25 MB | 0.38 MB | 62 MB (0.04 s) |
+| the same, `--shake-symbols` | 0.75 MB | 0.25 MB | 61 MB (0.03 s) |
 | the REPL image with the compiler (`build/clysm-native.wasm`, `clysm eval t`) | 8.6 MB | 2.2 MB | 129 MB |
 | its heap image (`build/clysm-native.img`) | 10.8 MB | 3.0 MB | |
 
@@ -8532,6 +8532,32 @@ bytes): `%set-method-extra` was copied into the toplevel form of each
 calls it (8 KB). Both are now `notinline`: 9,044,220 bytes (+40 KB: the
 new functions, the small upgrader and its callers' second ways, the
 shake's limits in the compiler).
+
+**Names in the class system's data are not calls with `--shake-symbols`
+either.** `ph-mark-data-symbol` (`src/preinit.lisp`) keeps, with
+`--shake-symbols`, the global of a symbol that the class system's data
+names, and it marked that global as `shake-module`'s `:global`, which is
+what code refers to: `mark-global` then reached the symbol itself
+(`mark-symbol`), and the heap's hook `:symbol` kept what the symbol names,
+its function too. So the names of slots and classes kept their functions
+again, only with `--shake-symbols`: `pathname` and through its class
+`logical-pathname` and the pathname functions (149 KB of code), `close`
+from the slot of a directive of `format` and with it its generic function
+and methods, and the dispatch (`%compute-fast-emf`, 79 KB): by source
+file `clos.lisp` 196 KB of code against 6 with `--shake`, `pathname.lisp`
+60 against none, `eval.lisp` 40 against 1.5, `gray.lisp` 24 against 0.2,
+`process.lisp` 17 against 0.4. It is now
+marked `:data-global`, which keeps the global and passes its symbol to the
+hook as `:data-symbol`, as `*shake-data-context*` does for the symbols of
+a data global's initializer; something else that refers to the symbol
+still reaches it as before. With `--shake-symbols` the module of one export
+was larger than with `--shake` (1,268,269 bytes, `gzip -9` 388,449, 1,001
+KB of code in 3,312 functions, against 924,917 and 302,466, 553 KB in
+1,913); it is now 750,180 bytes (`gzip -9` 248,903): 540 KB of code in
+the 1,913 functions of `--shake`, and the symbols those leave out.
+`tests/lib/run.sh` compiles it with `--shake-symbols` too, and fails when
+it is larger than `tests/lib/one-symbols.max-bytes` or than the module of
+`--shake`.
 
 `--shake-why REPORT` (with `compile` or `library`; it implies `--shake`)
 writes what keeps the code: its size by source file; the functions, globals
