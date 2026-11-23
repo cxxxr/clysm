@@ -2550,16 +2550,26 @@ T): from the unit, or from the image; or NIL."
                  (and c (remove t (mapcar #'class-name (clysm-sys::%class-cpl c)))))))))
 
   (defun clysm-sys::%ct-live-subclasses (name limit)
-    "The names of the class NAME of the image and of its subclasses there, at most LIMIT."
-    (let ((c (clysm-sys::%ct-live-class name)) (r nil) (count 0))
+    "The names of the class NAME of the image and of its subclasses there, at most LIMIT.
+Only the names in packages that the code being compiled is sure to find
+where it is loaded: NAME's own (the source names it), CL and SYSTEM, the
+current package and those it uses.  The tree names its classes, and a fasl
+compiled in an image with more (Lem's, for micros' inspector) is loaded in
+images without them (a world): their packages would not be there to read
+the fasl.  A subclass left out goes the generic way."
+    (let ((c (clysm-sys::%ct-live-class name)) (r nil) (count 0) (visited 0)
+          (packages (list* (symbol-package name) (find-package "COMMON-LISP") (find-package "SYSTEM")
+                           *package* (package-use-list *package*))))
       (when c
         (let ((queue (list c)))
           (loop
-            (when (or (null queue) (>= count limit)) (return))
+            (when (or (null queue) (>= count limit) (>= visited (* 8 limit))) (return))
             (let* ((x (pop queue)) (nm (class-name x)))
+              (setq visited (+ visited 1))
               (when (and nm (symbolp nm) (eq (find-class nm nil) x) (not (member nm r)))
-                (push nm r)
-                (setq count (+ count 1))
+                (when (member (symbol-package nm) packages)
+                  (push nm r)
+                  (setq count (+ count 1)))
                 (setq queue (append queue (clysm-sys::class-direct-subclasses x))))))))
       (nreverse r)))
 

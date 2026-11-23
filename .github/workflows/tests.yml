@@ -37,8 +37,8 @@ jobs:
             run: NATIVE=1 tools/run-tests.sh
           - name: self-hosted
             run: make selfhost && SELFHOST=1 tools/run-tests.sh
-          - name: library, ASDF, linked heap image, definitions
-            run: tools/check-defs.py && make test-lib test-asdf test-link
+          - name: library, ASDF, linked heap image, fasls across images, definitions
+            run: tools/check-defs.py && make test-lib test-asdf test-link test-fasl-images
           # the README says Node.js 22 runs everything but JS:AWAIT (and so
           # threads and the npm package), which needs Node.js 24
           - name: compiled, Node.js 22
