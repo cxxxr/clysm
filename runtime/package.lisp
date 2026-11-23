@@ -268,7 +268,8 @@ that are there)."
 ;;; symbols that its code refers to.  *%DROPPED-SYMBOLS* is then the names
 ;;; of the others of COMMON-LISP and of the program's packages, as the
 ;;; octets of SYMBOL-TABLE-DATA in src/driver.lisp (records of the package's
-;;; index in the package table plus 1, 1 if the symbol was external, the
+;;; index in the package table plus 1 (255 escapes an unsigned LEB128 index),
+;;; 1 if the symbol was external, the
 ;;; length of the name and its characters), made a hash table of NAME ->
 ;;; ((package . external-p) ...) when a name is first not found: looking up
 ;;; one of these names is an error, not a new symbol that is not the one
@@ -280,13 +281,21 @@ that are there)."
       (let ((octets table) (i 0) (pkgs *%dropped-symbol-packages*))
         (setq table (make-hash-table :test 'equal))
         (do () ((>= i (%bytes-length octets)))
-          (let* ((pkg (%svref pkgs (- (%bytes-ref octets i) 1)))
-                 (ext (= (%bytes-ref octets (+ i 1)) 1))
-                 (len (%bytes-ref octets (+ i 2)))
+          (let* ((pidx (%bytes-ref octets i))
+                 (pkg (progn
+                        (incf i)
+                        (when (= pidx 255)
+                          (setq pidx 0)
+                          (do ((shift 0 (+ shift 7)) (octet 128)) ((< octet 128))
+                            (setq octet (%bytes-ref octets i) i (+ i 1))
+                            (setq pidx (logior pidx (ash (logand octet 127) shift)))))
+                        (%svref pkgs (- pidx 1))))
+                 (ext (= (%bytes-ref octets i) 1))
+                 (len (%bytes-ref octets (+ i 1)))
                  (n (make-string len)))
-            (dotimes (j len) (setf (char n j) (code-char (%bytes-ref octets (+ i 3 j)))))
+            (dotimes (j len) (setf (char n j) (code-char (%bytes-ref octets (+ i 2 j)))))
             (push (cons pkg ext) (gethash n table))
-            (setq i (+ i 3 len))))
+            (setq i (+ i 2 len))))
         (setq *%dropped-symbols* table)))
     (dolist (e (gethash name table))
       (when (or (eq (car e) p) (and (cdr e) (member (car e) (%pkg p 2))))
@@ -683,10 +692,11 @@ which leaves out the symbols that its code does not refer to"
 ;;; TABLES: (symtab pkgtab info . dropped).  SYMTAB is a vector of vectors
 ;;; of the symbols, INFO three octets a symbol in the same order
 ;;; (SYMBOL-TABLE-DATA in src/driver.lisp): its package's index in PKGTAB
-;;; plus 1 (0: none), its flags (1: external) and the length of its name.
+;;; plus 1 (0: none, 255: unsigned LEB128 index in the tail after all
+;;; three-octet records), its flags (1: external) and the length of its name.
 ;;; DROPPED: see *%DROPPED-SYMBOLS*.
 (defun %init-packages (tables)
-  (let ((symtab (car tables)) (pkgtab (cadr tables)) (info (caddr tables)) (dropped (cdddr tables)) (k 0))
+  (let ((symtab (car tables)) (pkgtab (cadr tables)) (info (caddr tables)) (dropped (cdddr tables)) (k 0) (overflow 0))
     (setq *package-table* (make-hash-table :test 'equal))
     (let ((pkgs (%make-simple-vector (%svlength pkgtab) nil)))
       (dotimes (i (%svlength pkgtab))
@@ -703,11 +713,19 @@ which leaves out the symbols that its code does not refer to"
       (when dropped
         (setq *%dropped-symbols* dropped *%dropped-symbol-packages* pkgs))
       (dotimes (chunk-index (%svlength symtab))
+        (setq overflow (+ overflow (* 3 (%svlength (%svref symtab chunk-index))))))
+      (dotimes (chunk-index (%svlength symtab))
        (let ((chunk (%svref symtab chunk-index)))
         (do ((i 0 (+ i 1))) ((>= i (%svlength chunk)))
-        (let ((sym (%svref chunk i)) (pidx (- (%bytes-ref info (* 3 k)) 1))
+        (let ((sym (%svref chunk i)) (pidx (%bytes-ref info (* 3 k)))
               (ext (oddp (%bytes-ref info (+ (* 3 k) 1)))))
           (setq k (+ k 1))
+          (when (= pidx 255)
+            (setq pidx 0)
+            (do ((shift 0 (+ shift 7)) (octet 128)) ((< octet 128))
+              (setq octet (%bytes-ref info overflow) overflow (+ overflow 1))
+              (setq pidx (logior pidx (ash (logand octet 127) shift)))))
+          (setq pidx (- pidx 1))
           (when (>= pidx 0)
             (let ((p (%svref pkgs pidx)))
               (%set-symbol-package sym p)

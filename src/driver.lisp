@@ -873,22 +873,28 @@ of its own, kept only if something refers to SYMBOL (SHAKE-MODULE)."
 :INIT-SYMBOLS and %INIT-PACKAGES: (values NAMES INFO), octet vectors.  NAMES
 has the characters of the names of the DATA-NAMED-SYMBOL-P symbols, one after
 the other; INFO three octets a symbol: its package's index in the package
-table plus 1 (0: none), its flags (1: external, 2: special, 4: its
-initializer sets its name) and the length of its name."
+table plus 1 (0: none, 255: read an unsigned LEB128 index from the tail),
+its flags (1: external, 2: special, 4: its initializer sets its name) and
+the length of its name. The tail follows all three-octet records."
   (let ((names (make-array 0 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0))
-        (info (make-array (* 3 (length syms)) :element-type '(unsigned-byte 8))))
+        (info (make-array (* 3 (length syms)) :element-type '(unsigned-byte 8)
+                          :adjustable t :fill-pointer (* 3 (length syms)))))
     (loop for s in syms for k from 0
           do (let* ((pn (symbol-target-package-name s))
                     (ext (and pn (eq (nth-value 1 (find-symbol (symbol-name s) (symbol-package s))) :external)))
                     (data (data-named-symbol-p s))
                     (pidx (if pn (1+ (funcall pkg-index pn)) 0)))
-               (assert (< pidx 256))
-               (setf (aref info (* 3 k)) pidx
+               (when (>= pidx 255)
+                 (loop for rest = pidx then (ash rest -7)
+                       do (vector-push-extend (logior (logand rest 127) (if (> rest 127) 128 0)) info)
+                       while (> rest 127)))
+               (setf (aref info (* 3 k)) (min pidx 255)
                      (aref info (+ (* 3 k) 1)) (logior (if ext 1 0) (if (gethash s *specials*) 2 0) (if data 0 4))
                      (aref info (+ (* 3 k) 2)) (if data (length (symbol-name s)) 0))
                (when data
                  (loop for c across (symbol-name s) do (vector-push-extend (char-code c) names)))))
-    (values (coerce names '(simple-array (unsigned-byte 8) (*))) info)))
+    (values (coerce names '(simple-array (unsigned-byte 8) (*)))
+            (coerce info '(simple-array (unsigned-byte 8) (*))))))
 
 (defun symtab-init (syms)
   "The initializer of :SYMTAB: a vector of vectors of SYMS (array.new_fixed
@@ -1011,14 +1017,20 @@ left out, for an error when they are looked up (*%DROPPED-SYMBOLS* in
 runtime/package.lisp): those of COMMON-LISP and of the packages the program
 made (those of the runtime, but COMMON-LISP-USER, are its own), whose names
 are DATA-NAMED-SYMBOL-P.  For each, its package's index plus 1, 1 if it is
-external (else 0), the length of its name and its characters."
+external (else 0), the length of its name and its characters. A package
+index of 255 escapes an unsigned LEB128 index immediately after that octet."
   (let ((out (make-array 0 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0)))
     (dolist (s syms)
       (let ((pn (symbol-target-package-name s)))
         (when (and pn (data-named-symbol-p s)
                    (or (member pn '("COMMON-LISP" "COMMON-LISP-USER") :test #'string=)
                        (not (member pn *runtime-package-names* :test #'string=))))
-          (vector-push-extend (1+ (funcall pkg-index pn)) out)
+          (let ((pidx (1+ (funcall pkg-index pn))))
+            (vector-push-extend (min pidx 255) out)
+            (when (>= pidx 255)
+              (loop for rest = pidx then (ash rest -7)
+                    do (vector-push-extend (logior (logand rest 127) (if (> rest 127) 128 0)) out)
+                    while (> rest 127))))
           (vector-push-extend (if (eq (nth-value 1 (find-symbol (symbol-name s) (symbol-package s))) :external) 1 0)
                               out)
           (vector-push-extend (length (symbol-name s)) out)

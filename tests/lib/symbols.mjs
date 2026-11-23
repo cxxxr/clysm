@@ -32,4 +32,11 @@ assert.throws(() => f.readLength('(pairlis)'), leftOut);
 // (DEFPACKAGE makes the symbols it exports: one nothing refers to is made anew)
 assert.equal(f.lookUp('unused-export', 'shapes'), 'SHAPES:UNUSED-EXPORT :EXTERNAL');
 assert.ok(f.symbolCount() > 100);
+assert.equal(f.largePackageSymbols(), 300);
+for (let i = 0; i < 300; i++) {
+  const packageName = `SHAKE-${i}`;
+  assert.equal(f.lookUp('kept', packageName), `${packageName}:KEPT :EXTERNAL`);
+  assert.throws(() => f.lookUp('dropped', packageName), leftOut);
+  assert.equal(f.lookUp('never-interned', packageName), 'NIL NIL');
+}
 console.log('lib: symbols ok');
