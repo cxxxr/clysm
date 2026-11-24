@@ -3364,12 +3364,34 @@ buffer), with no list or argument vector; else the generic way."
 ;;; misc
 ;;; ------------------------------------------------------------
 
+;;; A LOAD-TIME-VALUE of a quoted cons (the cells of the literal names of
+;;; JavaScript, %JS-NAME-LITERAL in runtime/js.lisp, 1200 of them in a program
+;;; of 2 MB) is a cons made when the module starts, in a global of its own
+;;; that the code reads, as the long constants are (*RUNTIME-CONSTS*), not a
+;;; constant of the global section: with these as constants that the code
+;;; reads, Firefox took 6 ms (8 %) more to compile the module, the code being
+;;; smaller (2026-11-24, #1527 of Code Contractor).  One for each list equal
+;;; to it in a scope (a file), as a literal is.
+(defvar *ltv-cons-globals* (make-hash-table :test 'equal)
+  "(scope car-code cdr-code) -> the global of a LOAD-TIME-VALUE of a quoted cons")
+
+(defun ltv-cons-global (obj)
+  (let ((key (list (literal-scope obj) (const-init-code (car obj)) (const-init-code (cdr obj)))))
+    (or (gethash key *ltv-cons-globals*)
+        (let ((name (list :rconst (incf *const-counter*))))
+          (push (list name `(,@(second key) ,@(third key) (:struct.new :cons))) *runtime-consts*)
+          (setf (gethash key *ltv-cons-globals*) name)))))
+
 (defun cg-ltv (node mv)
-  ;; (of a constant: that constant, with no global nor the code that sets
-  ;; it; a literal name of JavaScript, %JS-NAME-LITERAL, at every place one
-  ;; is written)
+  ;; (of a constant: that constant, with no code that sets it; a literal
+  ;; name of JavaScript, %JS-NAME-LITERAL, at every place one is written)
   (when (eq (car (second node)) :const)
-    (return-from cg-ltv `(,@(cg-const (second (second node))) ,@(when mv (mv-one)))))
+    (let ((obj (second (second node))))
+      (return-from cg-ltv
+        `(,@(if (and (consp obj) (not *live-mode*))
+                `((:global.get ,(ltv-cons-global obj)))
+                (cg-const obj))
+          ,@(when mv (mv-one))))))
   (let ((g (list :ltv (incf *ltv-counter*))) (l (gensym "LTV")))
     (push (list g :eqref t '((:ref.null :eq))) *misc-globals*)
     (let ((value-code (let ((*fs* *fs*))

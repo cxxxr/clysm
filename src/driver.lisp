@@ -66,6 +66,7 @@ modules compiled in it import (*LIVE-IMPORTED-HELPERS*).")
         *macros-ready* nil
         *dynamic-functions* (make-hash-table :test 'eq)
         *runtime-consts* nil
+        *ltv-cons-globals* (make-hash-table :test 'equal)
         *node-types* (make-hash-table :test 'eq)
         *ti-analyzed* (make-hash-table :test 'eq)
         *spec-clones* (make-hash-table :test 'equal)

@@ -36,7 +36,7 @@
     *const-table* *const-string-table* *data-strings* *const-counter* *closure-globals*
     *closure-global-names* *misc-globals* *pending-lams* *compiled-lams* *extra-types* *ltv-counter*
     *called-functions* *initial-symbol-values* *deferred-macros* *macros-ready* *dynamic-functions*
-    *runtime-consts* *node-types* *ti-analyzed* *spec-clones* *raw-clones* *spec-cloneable*
+    *runtime-consts* *ltv-cons-globals* *node-types* *ti-analyzed* *spec-clones* *raw-clones* *spec-cloneable*
     *inline-candidates* *inlined-into* *declared-inline* *declared-ftypes* *lvar-lams* *read-package*
     *target-packages* *host->target-name* *target-nicknames*
     ;; (the rest of the state of a module, *CODEGEN-STATE-BINDINGS*)
