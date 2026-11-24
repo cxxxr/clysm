@@ -20,8 +20,10 @@ const name = path.basename(wasmPath, '.wasm');
 // clysm.sources, 7 % of a module) go to NAME.wasm.debug, a module of those
 // sections only, which the host reads when it first maps a stack trace
 // (host/lib.mjs): a page or a package can leave it out.  (A library whose
-// modules hold its module holds them too: the module as it was compiled.)
+// modules holds them in a string of their own, decoded when a stack trace is
+// first mapped: 4 % less to decompress and compile when it starts.)
 const compiled = fs.readFileSync(wasmPath);
+let kept = compiled, debugBytes = null;
 {
   const bytes = compiled;
   const leb = (p) => { let x = 0, s = 0, c; do { c = bytes[p++]; x |= (c & 127) << s; s += 7; } while (c & 128); return [x >>> 0, p]; };
@@ -36,8 +38,10 @@ const compiled = fs.readFileSync(wasmPath);
     p += size;
   }
   if (debug.length > 1) {
-    fs.writeFileSync(wasmPath, Buffer.concat(keep));
-    fs.writeFileSync(`${wasmPath}.debug`, Buffer.concat(debug));
+    kept = Buffer.concat(keep);
+    debugBytes = Buffer.concat(debug);
+    fs.writeFileSync(wasmPath, kept);
+    fs.writeFileSync(`${wasmPath}.debug`, debugBytes);
   }
 }
 const lib = await load(wasmPath, { stdout: () => {}, stderr: (t) => process.stderr.write(t) });
@@ -230,17 +234,20 @@ const compression = info.options?.compression ?? null;
 if (compression !== null && (!embed || !['gzip', 'xz'].includes(compression))) {
   throw new Error('library compression must be gzip or xz with embed');
 }
-let packed = compiled;
-if (compression === 'gzip') packed = gzipSync(compiled, { level: 9 });
-if (compression === 'xz') {
-  const result = spawnSync('xz', ['--format=xz', '--compress', '--stdout', '--check=crc32', '-9'],
-    { input: compiled, maxBuffer: Math.max(1024 * 1024, compiled.length * 2) });
-  if (result.error || result.status !== 0) {
-    throw new Error(`XZ library compression requires a working xz command: ${result.error?.message ?? result.stderr.toString()}`);
+const pack = (bytes) => {
+  if (compression === 'gzip') return gzipSync(bytes, { level: 9 });
+  if (compression === 'xz') {
+    const result = spawnSync('xz', ['--format=xz', '--compress', '--stdout', '--check=crc32', '-9'],
+      { input: bytes, maxBuffer: Math.max(1024 * 1024, bytes.length * 2) });
+    if (result.error || result.status !== 0) {
+      throw new Error(`XZ library compression requires a working xz command: ${result.error?.message ?? result.stderr.toString()}`);
+    }
+    return result.stdout;
   }
-  packed = result.stdout;
-}
-const embedded = embed ? packed.toString('base64') : null;
+  return bytes;
+};
+const embedded = embed ? pack(kept).toString('base64') : null;
+const embeddedDebug = embed && debugBytes ? pack(debugBytes).toString('base64') : null;
 const compressionLabel = compression === 'gzip' ? 'gzipped then ' : compression === 'xz' ? 'XZ-compressed then ' : '';
 const embeddedHost = compression === 'xz' ? './clysm/web/xz.mjs'
   : compression === 'gzip' ? './clysm/web/compressed.mjs' : './clysm/web/lib.mjs';
@@ -248,6 +255,11 @@ const loaderImport = embed
   ? `import { bytesOfBase64, loadSync } from '${embeddedHost}';`
   : "import { loadSync } from './clysm/lib.mjs';";
 const embeddedOptions = toStderr ? '{ outputToErrors: true }' : '{}';
+// (the names and places of the functions, for a stack trace: decoded only
+// when one is mapped, host/common.mjs)
+const embeddedDebugText = embeddedDebug
+  ? `// The names and places of its functions, ${compressionLabel}in base64 (${debugBytes.length} decoded bytes): read when a stack trace is first mapped.\nconst embeddedDebug = '${embeddedDebug}';\nconst embeddedDebugBytes = () => bytesOfBase64(embeddedDebug);\n`
+  : '';
 
 if (info.options?.lazy) {
   // A lazy library: importing its modules loads nothing. NAME.library.mjs
@@ -272,12 +284,12 @@ if (info.options?.lazy) {
 ${loaderImport}
 ${locationHelper}import { makeClass } from './clysm/jsffi.mjs';
 
-${embed ? `// The module, ${compressionLabel}in base64 (${compiled.length} decoded bytes, with the names of its functions).\nconst embedded = '${embedded}';\nlet source = null;` : (locations.length ? 'let source = null;' : `let source = new URL('./${name}.wasm', import.meta.url);`)}
+${embed ? `// The module, ${compressionLabel}in base64 (${kept.length} decoded bytes).\nconst embedded = '${embedded}';\n${embeddedDebugText}let source = null;` : (locations.length ? 'let source = null;' : `let source = new URL('./${name}.wasm', import.meta.url);`)}
 let given = {};
 let lib = null;
 ${embed ? `const __clysm_defaults = ${embeddedOptions};\n` : outputOptions}
 export function library() {
-  lib ??= loadSync(${embed ? 'source ?? bytesOfBase64(embedded)' : locations.length ? 'source ?? __clysm_module_file()' : 'source'}, { ...__clysm_defaults, ...given, classes${entrypoints.length ? ', modules: { ...entryModules, ...given.modules }, entryContexts' : ''} });
+  lib ??= loadSync(${embed ? 'source ?? bytesOfBase64(embedded)' : locations.length ? 'source ?? __clysm_module_file()' : 'source'}, { ...__clysm_defaults, ${embeddedDebug ? '...(source ? {} : { debug: embeddedDebugBytes }), ' : ''}...given, classes${entrypoints.length ? ', modules: { ...entryModules, ...given.modules }, entryContexts' : ''} });
   return lib;
 }
 
@@ -373,13 +385,13 @@ export {};
   write(`${name}${ext}`, `// Generated by Clysm (bin/clysm library) from the exports of ${name}.wasm.
 // The module's toplevel forms run when this module is imported; create()
 // makes another instance, with the options of load() in clysm/lib.mjs.
-${embed ? `import { moduleOfBase64 as __clysm_module_of, loadSync as __clysm_load } from '${embeddedHost}';
+${embed ? `import { moduleOfBase64 as __clysm_module_of, ${embeddedDebug ? 'bytesOfBase64, ' : ''}loadSync as __clysm_load } from '${embeddedHost}';
 
 const __clysm_defaults = ${embeddedOptions};
-// The module, ${compressionLabel}in base64 (${compiled.length} decoded bytes, with the names of its functions).
+// The module, ${compressionLabel}in base64 (${kept.length} decoded bytes).
 const __clysm_module = __clysm_module_of('${embedded}');
-const __clysm_lib = __clysm_load(__clysm_module, __clysm_defaults);
-export const create = async (options) => __clysm_load(__clysm_module, { ...__clysm_defaults, ...options });` : `import { load as __clysm_load } from './clysm/lib.mjs';
+${embeddedDebug ? `${embeddedDebugText}const __clysm_options = { ...__clysm_defaults, debug: embeddedDebugBytes };\n` : 'const __clysm_options = __clysm_defaults;\n'}const __clysm_lib = __clysm_load(__clysm_module, __clysm_options);
+export const create = async (options) => __clysm_load(__clysm_module, { ...__clysm_options, ...options });` : `import { load as __clysm_load } from './clysm/lib.mjs';
 
 ${outputOptions}${locationHelper}const __clysm_url = ${locations.length ? '__clysm_module_file()' : `new URL('./${name}.wasm', import.meta.url)`};
 const __clysm_lib = await __clysm_load(__clysm_url, __clysm_defaults);

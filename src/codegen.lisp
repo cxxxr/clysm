@@ -3365,6 +3365,11 @@ buffer), with no list or argument vector; else the generic way."
 ;;; ------------------------------------------------------------
 
 (defun cg-ltv (node mv)
+  ;; (of a constant: that constant, with no global nor the code that sets
+  ;; it; a literal name of JavaScript, %JS-NAME-LITERAL, at every place one
+  ;; is written)
+  (when (eq (car (second node)) :const)
+    (return-from cg-ltv `(,@(cg-const (second (second node))) ,@(when mv (mv-one)))))
   (let ((g (list :ltv (incf *ltv-counter*))) (l (gensym "LTV")))
     (push (list g :eqref t '((:ref.null :eq))) *misc-globals*)
     (let ((value-code (let ((*fs* *fs*))
