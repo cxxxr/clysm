@@ -20,7 +20,8 @@
 //   modules   an object of JavaScript modules that Lisp gets with (js:module "name")
 //   import    the function that (js:import "specifier") calls (by default import())
 //   debug     the bytes of the names and places of the module's functions
-//             (NAME.wasm.debug), for stack traces, when the module has none
+//             (NAME.wasm.debug), for stack traces, when the module has none;
+//             or a function giving them, called when a trace is first mapped
 //   location  the URL the module is from, which JS:LIBRARY-LOCATION gives (none
 //             by default: an embedded library's module is in its own modules)
 //   classes   the classes of JS:DEFINE-CLASS, by name, that the modules of a
@@ -72,7 +73,8 @@ export function loadSync(source, options = {}) {
   };
   const imports = makeImports(state, platform);
   // (the names and places of the functions: in the module, or given as the bytes of its .debug)
-  installSourceMap(state, module, options.debug ? () => options.debug : null);
+  installSourceMap(state, module, typeof options.debug === 'function' ? options.debug
+    : options.debug ? () => options.debug : null);
   const instance = new WebAssembly.Instance(module, imports);
   state.instance = instance;
   const exportsObject = {};

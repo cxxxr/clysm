@@ -31,4 +31,12 @@ if (mode === 'eager') {
   assert.equal(lib.next(), 3);
   assert.equal(globalThis.compressionStarts, 2);
 }
+// (the names of the functions, which the trace above has, are not in the
+// embedded module: a string of their own, decoded for the trace)
+{
+  const text = fs.readFileSync(file(mode === 'lazy' ? 'compressed.library.mjs' : 'compressed.mjs'), 'utf8');
+  const strings = [...text.matchAll(/'([A-Za-z0-9+/=]{100,})'/g)].map((m) => m[1]);
+  assert.equal(strings.length, 2);
+  assert.match(text, /const __clysm_debug = '/);
+}
 console.log(`lib: compressed ${mode}${override ? ' ' + override : ''} ok`);

@@ -32,7 +32,8 @@
 //   debug     the bytes of the names and places of the module's functions
 //             (NAME.wasm.debug, which bin/clysm library writes beside
 //             NAME.wasm and which is read from there when SOURCE is a path
-//             or a URL), for stack traces, or null
+//             or a URL), for stack traces, or null; or a function giving
+//             them, called when a trace is first mapped
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -155,7 +156,8 @@ function instantiate(module, options, debug = null) {
     require: options.require || access.require,
   };
   const imports = makeImports(state, makePlatform(state, options));
-  installSourceMap(state, module, options.debug !== undefined ? () => options.debug : debug);
+  installSourceMap(state, module, typeof options.debug === 'function' ? options.debug
+                                 : options.debug !== undefined ? () => options.debug : debug);
   const instance = new WebAssembly.Instance(module, imports);
   state.instance = instance;
   const exportsObject = {};

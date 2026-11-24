@@ -23,3 +23,8 @@
     (print (list (js:get o "日本語") (js:get o "a-b.c") (js:get o "length")))))
 ;; in a function made at run time
 (print (funcall (compile nil '(lambda (o) (js:get o "kind"))) (js:object "kind" :compiled)))
+;; a name compiled again and again in the image is one cell, not one more
+;; to empty for each form (SYS::*JS-FILLED-NAMES*)
+(let ((o (js:object "kind" :again)) (before (length sys::*js-filled-names*)))
+  (dotimes (i 5) (funcall (compile nil '(lambda (o) (js:get o "kindAgain"))) o))
+  (print (<= (- (length sys::*js-filled-names*) before) 1)))

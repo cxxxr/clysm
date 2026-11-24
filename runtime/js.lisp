@@ -166,53 +166,77 @@ called from JavaScript), otherwise a JS:JS-ERROR.  Otherwise R, unconverted."
 ;;; property by its name cost six times what it costs with the name already
 ;;; JavaScript's.  Compiled code makes such a name JavaScript's once, where it
 ;;; is written, when it first comes there.  The JavaScript string is kept in
-;;; a cell (string . JavaScript string), one for each name, not as the value
-;;; of the LOAD-TIME-VALUE itself: a heap image cannot hold JavaScript
-;;; objects, so SAVE-IMAGE empties the cells (%JS-FORGET-NAMES) and the image
-;;; started from the file makes each name again when it first uses it.
-(defvar *js-name-cells* nil "string -> (string . JavaScript string or NIL)")
+;;; a cell (string . JavaScript string), a literal cons of the code where the
+;;; name is written, whose cdr is %JS-UNMADE until the name is first used: a
+;;; heap image cannot hold JavaScript objects, so SAVE-IMAGE empties the
+;;; cells (%JS-FORGET-NAMES) and the image started from the file makes each
+;;; name again when it first uses it.  (A literal cell, not one that
+;;; %JS-NAME-CELL made at load time: that was a global and the code that
+;;; makes the cell at each place a name is written, 3800 of them in a program
+;;; of 2 MB, a twentieth of its code.  Literals of one file that are similar
+;;; are one cons, so a name written many times in a file is one cell.  Code
+;;; compiled in the image, which keeps each literal, takes the one cell of
+;;; its name from *JS-NAME-CELLS*: a cell for each form evaluated would stay
+;;; in *JS-FILLED-NAMES*.)
+(defvar *js-name-cells* nil "string -> (string . JavaScript string or %JS-UNMADE), of code compiled in the image")
+(defvar *js-filled-names* nil "The cells made JavaScript's (%JS-NAME-FILL), to empty them.")
 
 (defun %js-name-cell (string)
-  ;; (a LOAD-TIME-VALUE of the image may come before the DEFVAR)
-  (let ((table (or (and (boundp '*js-name-cells*) *js-name-cells*)
-                   (setq *js-name-cells* (make-hash-table :test 'equal)))))
+  "The one cell of STRING for code compiled in the image (%JS-NAME-LITERAL)."
+  (let ((table (or *js-name-cells* (setq *js-name-cells* (make-hash-table :test 'equal)))))
     (or (gethash string table)
-        (setf (gethash string table) (cons string nil)))))
+        (setf (gethash string table) (cons string '%js-unmade)))))
 
 (defun %js-name-fill (cell)
+  ;; (a name used while the runtime is loaded, before the DEFVAR, is a cell
+  ;; of this list too)
+  (if (boundp '*js-filled-names*)
+      (push cell *js-filled-names*)
+      (setq *js-filled-names* (list cell)))
   (setf (cdr cell) (%js-string (car cell))))
 
 (defun %js-forget-names ()
-  (when *js-name-cells*
-    (maphash (lambda (string cell) (declare (ignore string)) (setf (cdr cell) nil)) *js-name-cells*)))
+  (dolist (cell *js-filled-names*) (setf (cdr cell) '%js-unmade))
+  (setq *js-filled-names* nil))
 
 (declaim (not-copied %js-cell-name))
 (defun %js-cell-name (cell)
-  "The JavaScript string of CELL (%JS-NAME-CELL), made at its first use."
-  (or (cdr cell) (%js-name-fill cell)))
+  "The JavaScript string of CELL (%JS-NAME-LITERAL), made at its first use."
+  (let ((name (cdr cell))) (if (eq name '%js-unmade) (%js-name-fill cell) name)))
+
+(defmacro %js-name-literal (string)
+  ;; (a fresh cons each time: one that the code may change; in a
+  ;; LOAD-TIME-VALUE, which is the cons, as the cell's global was: a
+  ;; function with one is not copied where it is called, and the copies of
+  ;; the functions that write names made the code of a program a third
+  ;; larger)
+  `(load-time-value (quote ,(if (%ct-live-p) (%js-name-cell string) (cons string '%js-unmade)))))
 
 (defmacro %js-literal-name (string)
   ;; (one direct call where the name is used: the code of the cell's test
   ;; and of making the string, copied into each JS:GET of a literal name,
   ;; was most of it)
-  `(%js-cell-name (load-time-value (%js-name-cell ,string))))
+  `(%js-cell-name (%js-name-literal ,string)))
 
 (declaim (not-copied %js-get-named %js-get-raw-named %js-set-named))
-;; (the test of the cell in each: one call on the way of every access)
-(defun %js-get-named (object cell) (js:get object (or (cdr cell) (%js-name-fill cell))))
-(defun %js-get-raw-named (object cell) (js:get-raw object (or (cdr cell) (%js-name-fill cell))))
-(defun %js-set-named (object cell value) (js:set object (or (cdr cell) (%js-name-fill cell)) value))
+;; (the test of the cell in each, written out: one call on the way of every
+;; access)
+(defmacro %js-cell-name-here (cell)
+  `(let ((name (cdr ,cell))) (if (eq name '%js-unmade) (%js-name-fill ,cell) name)))
+(defun %js-get-named (object cell) (js:get object (%js-cell-name-here cell)))
+(defun %js-get-raw-named (object cell) (js:get-raw object (%js-cell-name-here cell)))
+(defun %js-set-named (object cell value) (js:set object (%js-cell-name-here cell) value))
 
 ;; (a literal name: one direct call, of the object and the name's cell)
 (define-compiler-macro js:get (&whole form object key)
-  (if (stringp key) `(%js-get-named ,object (load-time-value (%js-name-cell ,key))) form))
+  (if (stringp key) `(%js-get-named ,object (%js-name-literal ,key)) form))
 
 (define-compiler-macro js:set (&whole form object key value)
   ;; (the value, as JS:SET gives it, seen by the type inference)
   (if (stringp key)
       (let ((o (gensym "O")) (v (gensym "V")))
         `(let* ((,o ,object) (,v ,value))
-           (%js-set-named ,o (load-time-value (%js-name-cell ,key)) ,v)
+           (%js-set-named ,o (%js-name-literal ,key) ,v)
            ,v))
       form))
 
@@ -220,7 +244,7 @@ called from JavaScript), otherwise a JS:JS-ERROR.  Otherwise R, unconverted."
   (if (stringp method) `(js:call ,object (%js-literal-name ,method) ,@args) form))
 
 (define-compiler-macro js:get-raw (&whole form object key)
-  (if (stringp key) `(%js-get-raw-named ,object (load-time-value (%js-name-cell ,key))) form))
+  (if (stringp key) `(%js-get-raw-named ,object (%js-name-literal ,key)) form))
 
 (define-compiler-macro js:call-raw (&whole form object method &rest args)
   (if (stringp method) `(js:call-raw ,object (%js-literal-name ,method) ,@args) form))
