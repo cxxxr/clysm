@@ -66,7 +66,7 @@ modules compiled in it import (*LIVE-IMPORTED-HELPERS*).")
         *macros-ready* nil
         *dynamic-functions* (make-hash-table :test 'eq)
         *runtime-consts* nil
-        *ltv-cons-globals* (make-hash-table :test 'equal)
+        *js-name-cell-globals* (make-hash-table :test 'equal)
         *node-types* (make-hash-table :test 'eq)
         *ti-analyzed* (make-hash-table :test 'eq)
         *spec-clones* (make-hash-table :test 'equal)
@@ -1506,6 +1506,10 @@ when the module loads.  Returns the number of bytes written."
       (error "PREINIT-THROUGH must name one of the program's source files")))
   (reset-compiler)
   (setf *runtime-top-count* nil *preinit-parts* nil *preinit-table-check* nil)
+  ;; (the prologue of _start makes the cells of the literal names of
+  ;; JavaScript unless the module is shaken without the heap of
+  ;; src/preinit.lisp: JS-NAME-CELL-GLOBAL)
+  (setf *name-cells-at-start* (or (not *shake*) (and *preinit-function* runtime-dir t)))
   (let* ((runtime-prefix (and *shake* runtime-dir
                               (ignore-errors
                                ;; (as the functions' sources are named, SOURCE-FILE-NAME)

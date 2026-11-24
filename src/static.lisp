@@ -36,7 +36,7 @@
     *const-table* *const-string-table* *data-strings* *const-counter* *closure-globals*
     *closure-global-names* *misc-globals* *pending-lams* *compiled-lams* *extra-types* *ltv-counter*
     *called-functions* *initial-symbol-values* *deferred-macros* *macros-ready* *dynamic-functions*
-    *runtime-consts* *ltv-cons-globals* *node-types* *ti-analyzed* *spec-clones* *raw-clones* *spec-cloneable*
+    *runtime-consts* *js-name-cell-globals* *name-cells-at-start* *node-types* *ti-analyzed* *spec-clones* *raw-clones* *spec-cloneable*
     *inline-candidates* *inlined-into* *declared-inline* *declared-ftypes* *lvar-lams* *read-package*
     *target-packages* *host->target-name* *target-nicknames*
     ;; (the rest of the state of a module, *CODEGEN-STATE-BINDINGS*)
@@ -133,6 +133,8 @@ runtime's toplevel forms make, made when the program is built
                    *runtime-copy-limit* (list "runtime/" 5 300)))
            (setf (svref build 2)
                  (mapcar (lambda (v) (cons v (symbol-value v))) *static-sink-variables*))
+           ;; (JS-NAME-CELL-GLOBAL: as the runtime's heap is made below)
+           (setq *name-cells-at-start* (or (not *shake*) (not (ph-getenv "CLYSM_NO_PREINIT"))))
            (let ((*read-package* (find-target-package "SYSTEM")))
              (dolist (f (static-runtime-files root)) (compile-source-file f))
              (when version

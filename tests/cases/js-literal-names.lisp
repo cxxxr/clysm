@@ -28,3 +28,16 @@
 (let ((o (js:object "kind" :again)) (before (length sys::*js-filled-names*)))
   (dotimes (i 5) (funcall (compile nil '(lambda (o) (js:get o "kindAgain"))) o))
   (print (<= (- (length sys::*js-filled-names*) before) 1)))
+;; one cell for a name, wherever it is written (JS-NAME-CELL-GLOBAL in
+;; src/codegen.lisp; in the image, *JS-NAME-CELLS*): two functions that
+;; write it make it JavaScript's once
+(defun shared-name-1 (o) (js:get o "kindShared"))
+(defun shared-name-2 (o) (js:get o "kindShared"))
+(let ((o (js:object "kind" :shared)) (before (length sys::*js-filled-names*)))
+  (shared-name-1 o) (shared-name-2 o) (shared-name-2 o)
+  (print (<= (- (length sys::*js-filled-names*) before) 1)))
+;; a LOAD-TIME-VALUE of a quoted cons that is no name is that constant, one
+;; object, whose changes stay
+(defun user-cell () (load-time-value '(user . cell)))
+(setf (cdr (user-cell)) 'changed)
+(print (list (eq (user-cell) (user-cell)) (cdr (user-cell))))
