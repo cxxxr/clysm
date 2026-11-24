@@ -37,6 +37,6 @@ if (mode === 'eager') {
   const text = fs.readFileSync(file(mode === 'lazy' ? 'compressed.library.mjs' : 'compressed.mjs'), 'utf8');
   const strings = [...text.matchAll(/'([A-Za-z0-9+/=]{100,})'/g)].map((m) => m[1]);
   assert.equal(strings.length, 2);
-  assert.match(text, /const embeddedDebug = '/);
+  assert.match(text, /const __clysm_debug = '/);
 }
 console.log(`lib: compressed ${mode}${override ? ' ' + override : ''} ok`);
