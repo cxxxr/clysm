@@ -412,3 +412,9 @@ $ make test-ui       # the GUI framework and the examples of its guide
 
 `test-system`, `test-threads`, `test-swank` and `test-mcclim` take their
 libraries from an existing Quicklisp installation.
+
+## License
+
+Clysm is released under the MIT License; see [LICENSE](LICENSE).
+The third-party code it bundles (`third_party/`, `host/web/vendor/` and the
+libraries under `contrib/`) keeps its own license, given alongside it.
