@@ -24,6 +24,10 @@
       (sys::%exit 2))
     (let ((out (first files)) (sources (rest files))
           (*shake* shake)
+          ;; (a module shaken here has no heap of src/preinit.lisp: the
+          ;; cells of the literal names of JavaScript are constants,
+          ;; JS-NAME-CELL-GLOBAL)
+          (*name-cells-at-start* (not shake))
           (*source-root* (ignore-errors (truename (concatenate 'string runtime-dir "/../")))))
       ;; macro expanders run by the image's evaluator receive the compiler's
       ;; environment objects (e.g. GET-SETF-EXPANSION inside a SETF expander)

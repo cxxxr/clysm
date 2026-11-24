@@ -2364,6 +2364,17 @@ arguments."
 unit are there to be looked at."
     (and (boundp 'clysm-sys::*native-eval-hook*) (symbol-value 'clysm-sys::*native-eval-hook*) t))
 
+  (defvar clysm-sys::*ct-js-name-cells* (make-hash-table :test 'eq)
+    "The cells that %JS-NAME-LITERAL made for modules compiled from files (JS-NAME-CELL-P).")
+
+  (defun clysm-sys::%ct-js-name-cell (string)
+    "A new cell (STRING . %JS-UNMADE) of the literal name STRING of
+JavaScript (%JS-NAME-LITERAL in runtime/js.lisp) for a module compiled from
+files, which the compiler knows by itself (JS-NAME-CELL-P in src/codegen.lisp)."
+    (let ((cell (cons string 'clysm-sys::%js-unmade)))
+      (setf (gethash cell clysm-sys::*ct-js-name-cells*) t)
+      cell))
+
   (defun clysm-sys::%ct-ll-shape (ll)
     "(nreq nopt more) of the lambda list LL of a method when the generic
 function may have a tree: its methods are functions of at most four

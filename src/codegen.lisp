@@ -3365,50 +3365,59 @@ buffer), with no list or argument vector; else the generic way."
 ;;; ------------------------------------------------------------
 
 ;;; The cell of a literal name of JavaScript (%JS-NAME-LITERAL in
-;;; runtime/js.lisp: a LOAD-TIME-VALUE of the quoted cons (STRING .
-;;; %JS-UNMADE), 1200 of them in a program of 2 MB) is a cons made when the
-;;; module starts, in a mutable global of its own that the code reads, as the
-;;; long constants are (*RUNTIME-CONSTS*), not a constant of the global
-;;; section: with them as constants that the code reads, Firefox took 6 ms
-;;; (8 %) more to compile the module, the code being smaller (2026-11-24,
-;;; #1527 of Code Contractor).  Other LOAD-TIME-VALUEs of a constant are that
-;;; constant (CG-CONST), with its identity and its scope.
+;;; runtime/js.lisp, 1200 of them in a program of 2 MB) is a LOAD-TIME-VALUE
+;;; of a quoted cons (STRING . %JS-UNMADE) that the macro made with
+;;; CLYSM-SYS::%CT-JS-NAME-CELL, which notes it (JS-NAME-CELL-P: by the cons
+;;; itself, not by its shape; a cons of the program's like it is a constant
+;;; as any other).  Other LOAD-TIME-VALUEs of a constant are that constant
+;;; (CG-CONST), with its identity and its scope.
 ;;;
-;;; One cell for each name in the module, whatever file it is written in: a
-;;; cell only ever holds its string and %JS-UNMADE or the JavaScript string
-;;; of that string, the same for every cell of the name, and nothing but
-;;; runtime/js.lisp has one.
+;;; One cell for each name in the module, whatever file it is written in
+;;; (JS-NAME-CELL-GLOBAL): a cell only ever holds its string and %JS-UNMADE
+;;; or the JavaScript string of that string, the same for every cell of the
+;;; name, and nothing but runtime/js.lisp has one.
 ;;;
-;;; Nothing reads a cell before the prologue of _start has made it: the host
-;;; calls _start first (host/lib.mjs, host/web/lib.mjs), and :INIT-SYMBOLS
-;;; and :INIT-STRINGS, before the prologue, run no Lisp code; a module
-;;; started from the heap that src/preinit.lisp made has the cells in its
-;;; objects, set before any Lisp code runs (:SET-IMAGE-MUTABLES).
+;;; The cell is made when the module starts, in a mutable global of its own
+;;; that the code reads, as the long constants are (*RUNTIME-CONSTS*), not a
+;;; constant of the global section: with them as constants that the code
+;;; reads, Firefox took 6 ms (8 %) more to compile the module, the code
+;;; being smaller (2026-11-24, #1527 of Code Contractor).  Nothing reads a
+;;; cell before the prologue of _start has made it: the host calls _start
+;;; first (host/lib.mjs, host/web/lib.mjs), and :INIT-SYMBOLS and
+;;; :INIT-STRINGS, before the prologue, run no Lisp code; a module started
+;;; from the heap that src/preinit.lisp made has the cells in its objects,
+;;; set before any Lisp code runs (:SET-IMAGE-MUTABLES).
 ;;;
 ;;; Only where the prologue keeps no cell that nothing uses: in a module not
 ;;; shaken (it keeps all the code), or shaken from the heap that
 ;;; src/preinit.lisp makes (its start function has no prologue, and a cell
 ;;; is kept when kept code reads it).  A module shaken otherwise
-;;; (CLYSM_NO_PREINIT, a self-hosted compiler's) keeps the cells as
-;;; constants, which go with the code that reads them (*NAME-CELLS-AT-START*).
+;;; (CLYSM_NO_PREINIT, a self-hosted compiler's) has the cells as constants
+;;; of the global section, which go with the code that reads them
+;;; (*NAME-CELLS-AT-START*); so does one whose heap could not be made, but
+;;; it has made the cells in the prologue already (PREINIT-SHAKE's warning).
 ;;; Not in the image (live mode), whose code gets the cell itself.
 (defvar *name-cells-at-start* t
-  "True when the cells of the literal names of JavaScript are made by the prologue of _start (JS-NAME-CELL-GLOBAL).")
+  "True when the cells of the literal names of JavaScript are made by the prologue of _start, false when they are constants (JS-NAME-CELL-GLOBAL).")
 
 (defvar *js-name-cell-globals* (make-hash-table :test 'equal)
   "string -> the global of the cell of that literal name of JavaScript (JS-NAME-CELL-GLOBAL)")
 
 (defun js-name-cell-p (obj)
-  "Whether OBJ, the constant of a LOAD-TIME-VALUE, is the cell of a literal name of JavaScript (%JS-NAME-LITERAL)."
-  (and (consp obj) (simple-string-p (car obj)) (eq (cdr obj) 'clysm-sys::%js-unmade)))
+  "Whether OBJ, the constant of a LOAD-TIME-VALUE, is the cell of a literal name of JavaScript that %JS-NAME-LITERAL made (CLYSM-SYS::%CT-JS-NAME-CELL)."
+  (and (consp obj) (values (gethash obj clysm-sys::*ct-js-name-cells*))))
 
 (defun js-name-cell-global (obj)
+  "The global of the one cell in the module of the literal name of JavaScript of the cell OBJ."
   (let ((string (car obj)))
     (or (gethash string *js-name-cell-globals*)
-        (let ((name (list :rconst (incf *const-counter*))))
-          (push (list name `(,@(const-init-code string) ,@(const-init-code (cdr obj)) (:struct.new :cons)))
-                *runtime-consts*)
-          (setf (gethash string *js-name-cell-globals*) name)))))
+        (setf (gethash string *js-name-cell-globals*)
+              (let ((code `(,@(const-init-code string) ,@(const-init-code (cdr obj)) (:struct.new :cons))))
+                (if *name-cells-at-start*
+                    (let ((name (list :rconst (incf *const-counter*))))
+                      (push (list name code) *runtime-consts*)
+                      name)
+                    (new-const-global code)))))))
 
 (defun cg-ltv (node mv)
   ;; (of a constant: that constant, with no code that sets it; a literal
@@ -3416,7 +3425,7 @@ buffer), with no list or argument vector; else the generic way."
   (when (eq (car (second node)) :const)
     (let ((obj (second (second node))))
       (return-from cg-ltv
-        `(,@(if (and (js-name-cell-p obj) *name-cells-at-start* (not *live-mode*))
+        `(,@(if (and (js-name-cell-p obj) (not *live-mode*))
                 `((:global.get ,(js-name-cell-global obj)))
                 (cg-const obj))
           ,@(when mv (mv-one))))))

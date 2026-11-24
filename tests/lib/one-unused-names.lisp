@@ -1,7 +1,8 @@
 ;;; One export, and a function that nothing calls, which writes 40 literal
 ;;; names of JavaScript: tests/lib/run.sh checks that the shaken module is
 ;;; no larger than that of tests/lib/one.lisp by much, with the heap of
-;;; src/preinit.lisp and without it (CLYSM_NO_PREINIT): the cells of the
+;;; src/preinit.lisp and without it (CLYSM_NO_PREINIT), and
+;;; tests/lib/selfhost-names.sh of the self-hosted compiler: the cells of the
 ;;; names go with the function (JS-NAME-CELL-GLOBAL, src/codegen.lisp).
 (js:export "one" (lambda () 1))
 (defun unused-names (o)

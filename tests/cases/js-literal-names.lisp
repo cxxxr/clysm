@@ -28,14 +28,17 @@
 (let ((o (js:object "kind" :again)) (before (length sys::*js-filled-names*)))
   (dotimes (i 5) (funcall (compile nil '(lambda (o) (js:get o "kindAgain"))) o))
   (print (<= (- (length sys::*js-filled-names*) before) 1)))
-;; one cell for a name, wherever it is written (JS-NAME-CELL-GLOBAL in
-;; src/codegen.lisp; in the image, *JS-NAME-CELLS*): two functions that
-;; write it make it JavaScript's once
-(defun shared-name-1 (o) (js:get o "kindShared"))
-(defun shared-name-2 (o) (js:get o "kindShared"))
-(let ((o (js:object "kind" :shared)) (before (length sys::*js-filled-names*)))
-  (shared-name-1 o) (shared-name-2 o) (shared-name-2 o)
-  (print (<= (- (length sys::*js-filled-names*) before) 1)))
+;; one cell for a name in a module compiled from files, wherever it is
+;; written (JS-NAME-CELL-GLOBAL in src/codegen.lisp): a name that the
+;; runtime writes too (%JS-SUSPENDING-P, runtime/js.lisp), made
+;; JavaScript's there, is made so here too.  (Code compiled in the image
+;; takes its cells from *JS-NAME-CELLS*, its own.)
+(setq sys::*js-suspending* :unknown)
+(sys::%js-suspending-p)
+(let ((before (length sys::*js-filled-names*)))
+  (js:get (js:global "WebAssembly") "promising")
+  (print (or (= (length sys::*js-filled-names*) before)
+             (and sys::*js-name-cells* (nth-value 1 (gethash "promising" sys::*js-name-cells*)) t))))
 ;; a LOAD-TIME-VALUE of a quoted cons that is no name is that constant, one
 ;; object, whose changes stay
 (defun user-cell () (load-time-value '(user . cell)))

@@ -1508,7 +1508,9 @@ when the module loads.  Returns the number of bytes written."
   (setf *runtime-top-count* nil *preinit-parts* nil *preinit-table-check* nil)
   ;; (the prologue of _start makes the cells of the literal names of
   ;; JavaScript unless the module is shaken without the heap of
-  ;; src/preinit.lisp: JS-NAME-CELL-GLOBAL)
+  ;; src/preinit.lisp: JS-NAME-CELL-GLOBAL.  When that heap cannot be made,
+  ;; PREINIT-SHAKE shakes the module with its prologue, which keeps every
+  ;; cell; it says so in a warning)
   (setf *name-cells-at-start* (or (not *shake*) (and *preinit-function* runtime-dir t)))
   (let* ((runtime-prefix (and *shake* runtime-dir
                               (ignore-errors

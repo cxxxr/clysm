@@ -164,20 +164,23 @@ called from JavaScript), otherwise a JS:JS-ERROR.  Otherwise R, unconverted."
 ;;; A name written as a literal string (a property, a method, a global) is a
 ;;; string of Lisp, and made a string of JavaScript at every call: reading a
 ;;; property by its name cost six times what it costs with the name already
-;;; JavaScript's.  Compiled code makes such a name JavaScript's once, where it
-;;; is written, when it first comes there.  The JavaScript string is kept in
-;;; a cell (string . JavaScript string), a literal cons of the code where the
-;;; name is written, whose cdr is %JS-UNMADE until the name is first used: a
-;;; heap image cannot hold JavaScript objects, so SAVE-IMAGE empties the
-;;; cells (%JS-FORGET-NAMES) and the image started from the file makes each
-;;; name again when it first uses it.  (A literal cell, not one that
+;;; JavaScript's.  Compiled code makes such a name JavaScript's once, when it
+;;; is first used.  The JavaScript string is kept in a cell (string .
+;;; JavaScript string), whose cdr is %JS-UNMADE until the name is first
+;;; used: a heap image cannot hold JavaScript objects, so SAVE-IMAGE empties
+;;; the cells (%JS-FORGET-NAMES) and the image started from the file makes
+;;; each name again when it first uses it.  %JS-NAME-LITERAL writes the cell
+;;; as a LOAD-TIME-VALUE of a quoted cons: in a module compiled from files,
+;;; one the compiler knows as a cell (CLYSM-SYS::%CT-JS-NAME-CELL), and
+;;; makes one global of for each name in the module, whatever file it is
+;;; written in, made by the prologue of _start or a constant of the global
+;;; section (JS-NAME-CELL-GLOBAL in src/codegen.lisp).  (Not a cell that
 ;;; %JS-NAME-CELL made at load time: that was a global and the code that
-;;; makes the cell at each place a name is written, 3800 of them in a program
-;;; of 2 MB, a twentieth of its code.  Literals of one file that are similar
-;;; are one cons, so a name written many times in a file is one cell.  Code
-;;; compiled in the image, which keeps each literal, takes the one cell of
-;;; its name from *JS-NAME-CELLS*: a cell for each form evaluated would stay
-;;; in *JS-FILLED-NAMES*.)
+;;; makes the cell at each place a name is written, 3800 of them in a
+;;; program of 2 MB, a twentieth of its code.)  Code compiled in the image,
+;;; which keeps each literal, takes the one cell of its name from
+;;; *JS-NAME-CELLS*: a cell for each form evaluated would stay in
+;;; *JS-FILLED-NAMES*.
 (defvar *js-name-cells* nil "string -> (string . JavaScript string or %JS-UNMADE), of code compiled in the image")
 (defvar *js-filled-names* nil "The cells made JavaScript's (%JS-NAME-FILL), to empty them.")
 
@@ -205,12 +208,11 @@ called from JavaScript), otherwise a JS:JS-ERROR.  Otherwise R, unconverted."
   (let ((name (cdr cell))) (if (eq name '%js-unmade) (%js-name-fill cell) name)))
 
 (defmacro %js-name-literal (string)
-  ;; (a fresh cons each time: one that the code may change; in a
-  ;; LOAD-TIME-VALUE, which is the cons, as the cell's global was: a
+  ;; (in a LOAD-TIME-VALUE, which is the cons, as the cell's global was: a
   ;; function with one is not copied where it is called, and the copies of
   ;; the functions that write names made the code of a program a third
   ;; larger)
-  `(load-time-value (quote ,(if (%ct-live-p) (%js-name-cell string) (cons string '%js-unmade)))))
+  `(load-time-value (quote ,(if (%ct-live-p) (%js-name-cell string) (%ct-js-name-cell string)))))
 
 (defmacro %js-literal-name (string)
   ;; (one direct call where the name is used: the code of the cell's test
