@@ -86,6 +86,18 @@ done
 node tests/lib/compressed.mjs build/lib-test/compressed-xz-lazy lazy bytes || exit 1
 node tests/lib/compressed.mjs build/lib-test/compressed-xz-lazy lazy module || exit 1
 node tests/lib/xz.mjs || exit 1
+# Zstandard uses a JavaScript decoder (fzstd), synchronous as well.
+for mode in eager lazy; do
+  options=tests/lib/compressed-zstd.lisp
+  [ "$mode" = lazy ] && options=tests/lib/compressed-zstd-lazy.lisp
+  bin/clysm library --shake "$options" tests/lib/compressed-body.lisp tests/lib/compression-options-invalid.lisp \
+    -o "build/lib-test/compressed-zstd-$mode/compressed.wasm" > build/lib-test.log 2>&1 \
+    || { cat build/lib-test.log; exit 1; }
+  node tests/lib/compressed.mjs "build/lib-test/compressed-zstd-$mode" "$mode" || exit 1
+done
+node tests/lib/compressed.mjs build/lib-test/compressed-zstd-lazy lazy bytes || exit 1
+node tests/lib/compressed.mjs build/lib-test/compressed-zstd-lazy lazy module || exit 1
+node tests/lib/zstd.mjs || exit 1
 # the printer without the reader's macro functions
 bin/clysm library --shake tests/lib/print-only.lisp -o build/lib-test/print-only.wasm > build/lib-test.log 2>&1 \
   || { cat build/lib-test.log; exit 1; }

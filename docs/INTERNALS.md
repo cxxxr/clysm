@@ -2315,6 +2315,15 @@ JavaScript written for it (`tests/lib/package.lisp`):
   `useLibrary` overrides just like gzip. It imports no Node module and uses
   no fetch, eval or JSPI. Invalid, truncated or trailing input is rejected;
   each decode releases its native context, including on error.
+- `:compression :zstd` is a third. Generating the library needs Node.js
+  22.15 or later (`zlib.zstdCompressSync`, level 19, without a checksum);
+  running it does not. The synchronous web loader copies fzstd 0.1.1's
+  JavaScript decoder (MIT), with its license and provenance. On a page's
+  2.25 MB module it is about a fifth larger than XZ (521 KB against 436 KB)
+  and is decoded at first use in about 18 ms on Chrome and 24 ms on Firefox,
+  against about 31 and 34 ms for XZ. fzstd verifies no checksum: truncated,
+  trailing, empty or malformed input is rejected, and the module's bytes are
+  validated by `WebAssembly.Module`.
 - `(js:library-options :embed t)`: the modules hold the module's bytes (in
   base64) and load it with `host/web/lib.mjs`, which imports no module of
   Node.js: a library for a page, a browser's worker or Electron's renderer,

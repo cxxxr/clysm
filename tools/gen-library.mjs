@@ -7,7 +7,7 @@
 // stack traces, are moved from DIR/NAME.wasm to DIR/NAME.wasm.debug.
 import fs from 'node:fs';
 import path from 'node:path';
-import { gzipSync } from 'node:zlib';
+import * as zlib from 'node:zlib';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { load } from '../host/lib.mjs';
@@ -237,11 +237,23 @@ const __clysm_locations = ${JSON.stringify(locations)}.map((p) => new URL(p, imp
 const __clysm_module_file = () => __clysm_locations.find((p) => __clysm_exists(p)) ?? __clysm_locations[0];
 ` : '';
 const compression = info.options?.compression ?? null;
-if (compression !== null && (!embed || !['gzip', 'xz'].includes(compression))) {
-  throw new Error('library compression must be gzip or xz with embed');
+if (compression !== null && (!embed || !['gzip', 'xz', 'zstd'].includes(compression))) {
+  throw new Error('library compression must be gzip, xz or zstd with embed');
 }
 const pack = (bytes) => {
-  if (compression === 'gzip') return gzipSync(bytes, { level: 9 });
+  if (compression === 'gzip') return zlib.gzipSync(bytes, { level: 9 });
+  if (compression === 'zstd') {
+    // (level 19, the highest without --ultra's larger windows; no checksum,
+    // which fzstd does not verify: host/web/zstd.mjs)
+    if (typeof zlib.zstdCompressSync !== 'function') {
+      throw new Error('Zstandard library compression requires Node.js 22.15 or later (zlib.zstdCompressSync)');
+    }
+    return zlib.zstdCompressSync(bytes, { params: {
+      [zlib.constants.ZSTD_c_compressionLevel]: 19,
+      [zlib.constants.ZSTD_c_checksumFlag]: 0,
+      [zlib.constants.ZSTD_c_contentSizeFlag]: 1,
+    } });
+  }
   if (compression === 'xz') {
     const result = spawnSync('xz', ['--format=xz', '--compress', '--stdout', '--check=crc32', '-9'],
       { input: bytes, maxBuffer: Math.max(1024 * 1024, bytes.length * 2) });
@@ -254,8 +266,9 @@ const pack = (bytes) => {
 };
 const embedded = embed ? pack(kept).toString('base64') : null;
 const embeddedDebug = embed && debugBytes ? pack(debugBytes).toString('base64') : null;
-const compressionLabel = compression === 'gzip' ? 'gzipped then ' : compression === 'xz' ? 'XZ-compressed then ' : '';
-const embeddedHost = compression === 'xz' ? './clysm/web/xz.mjs'
+const compressionLabel = compression === 'gzip' ? 'gzipped then ' : compression === 'xz' ? 'XZ-compressed then '
+  : compression === 'zstd' ? 'Zstandard-compressed then ' : '';
+const embeddedHost = compression === 'xz' ? './clysm/web/xz.mjs' : compression === 'zstd' ? './clysm/web/zstd.mjs'
   : compression === 'gzip' ? './clysm/web/compressed.mjs' : './clysm/web/lib.mjs';
 const loaderImport = embed
   ? `import { bytesOfBase64, loadSync } from '${embeddedHost}';`
@@ -452,6 +465,7 @@ for (const r of reexports) {
 const hostFiles = embed ? ['common.mjs', 'jsffi.mjs', 'web/lib.mjs'] : ['common.mjs', 'jsffi.mjs', 'lib.mjs', 'worker.mjs', 'process.mjs'];
 if (compression === 'gzip') hostFiles.push('web/compressed.mjs', 'web/vendor/fflate.mjs', 'web/vendor/fflate.LICENSE', 'web/vendor/README.md');
 if (compression === 'xz') hostFiles.push('web/xz.mjs', 'web/vendor/xzwasm.mjs', 'web/vendor/xzwasm.LICENSE', 'web/vendor/xzwasm.README.md');
+if (compression === 'zstd') hostFiles.push('web/zstd.mjs', 'web/vendor/fzstd.mjs', 'web/vendor/fzstd.LICENSE', 'web/vendor/fzstd.README.md');
 for (const f of hostFiles) {
   fs.mkdirSync(path.dirname(path.join(dir, 'clysm', f)), { recursive: true });
   if (fs.existsSync(path.join(hostDir, f))) fs.copyFileSync(path.join(hostDir, f), path.join(dir, 'clysm', f));

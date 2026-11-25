@@ -722,16 +722,18 @@ NAME.d.mts).  With EMBED, the modules hold the module's bytes, and load it
 with the host of host/web/lib.mjs, which imports no module of Node.js: a
 library for a page, a browser's worker or Electron's renderer (and Node.js
 too), which has no files, processes or command line.  :OUTPUT :ERROR is then
-console.error.  COMPRESSION may be :GZIP or :XZ with EMBED: the bytes are
-compressed before encoding, and decompressed synchronously by the bundled
+console.error.  COMPRESSION may be :GZIP, :XZ or :ZSTD with EMBED: the bytes
+are compressed before encoding, and decompressed synchronously by the bundled
 web loader. :XZ needs the xz command when generating the library; its tiny
-Wasm decoder is embedded too, so running it needs no external files.
+Wasm decoder is embedded too, so running it needs no external files. :ZSTD
+needs Node.js 22.15 or later when generating it; its decoder (JavaScript) is
+faster than that of :XZ, for about a fifth more bytes.
 LOCATIONS, for a non-embedded library, is a list/vector of nonempty module
 paths relative to the generated loader. The first existing file is loaded;
 when none exists, loading the first path reports the ordinary file error.
 A lazy library searches only on first use, and USELIBRARY overrides it."
-  (unless (member compression '(nil :gzip :xz))
-    (error "JS:LIBRARY-OPTIONS: COMPRESSION is NIL, :GZIP or :XZ"))
+  (unless (member compression '(nil :gzip :xz :zstd))
+    (error "JS:LIBRARY-OPTIONS: COMPRESSION is NIL, :GZIP, :XZ or :ZSTD"))
   (when (and compression (not embed))
     (error "JS:LIBRARY-OPTIONS: COMPRESSION requires EMBED"))
   (unless (and (or (listp locations) (and (vectorp locations) (not (stringp locations))))
