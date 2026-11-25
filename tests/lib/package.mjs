@@ -1,5 +1,7 @@
 // Calls tests/lib/package.lisp compiled as a library (tests/lib/run.sh):
-//   node tests/lib/package.mjs DIR eager|lazy
+//   node tests/lib/package.mjs DIR eager|lazy|embedded [async]
+// (async: a lazy library loaded by loadLibrary(), its module compiled by
+// WebAssembly.compile and never by new WebAssembly.Module)
 // DIR has package.mjs and places.mjs (the entry "places"; .js for the lazy
 // library), and their .d.ts.
 import assert from 'node:assert/strict';
@@ -7,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const [dir, mode] = [path.resolve(process.argv[2]), process.argv[3]];
+const [dir, mode, async] = [path.resolve(process.argv[2]), process.argv[3], process.argv[4] === 'async'];
 const url = (file) => pathToFileURL(path.join(dir, file)).href;
 const embedded = mode === 'embedded';
 const lazy = mode === 'lazy' || embedded;
@@ -38,6 +40,19 @@ if (lazy) {
                { debug: fs.readFileSync(path.join(dir, 'package.wasm.debug')) });
   } else {
     useLibrary(new URL(url('package.wasm')));
+  }
+  if (async) {
+    const { loadLibrary } = await import(url(`package.library${ext}`));
+    const { compile, Module } = WebAssembly;
+    let compiles = 0, modules = 0;
+    WebAssembly.compile = (...args) => { compiles++; return compile(...args); };
+    WebAssembly.Module = new Proxy(Module, { construct(target, args) { modules++; return Reflect.construct(target, args); } });
+    try {
+      assert.equal(await loadLibrary(), loaded());
+    } finally {
+      Object.assign(WebAssembly, { compile, Module });
+    }
+    assert.deepEqual([compiles, modules], [1, 0]);
   }
 }
 assert.equal(lib.version, 113);
