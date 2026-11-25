@@ -28,3 +28,20 @@
 (let ((o (js:object "kind" :again)) (before (length sys::*js-filled-names*)))
   (dotimes (i 5) (funcall (compile nil '(lambda (o) (js:get o "kindAgain"))) o))
   (print (<= (- (length sys::*js-filled-names*) before) 1)))
+;; one cell for a name in a module compiled from files, wherever it is
+;; written (JS-NAME-CELL-GLOBAL in src/codegen.lisp): a name that the
+;; runtime writes too (%JS-SUSPENDING-P, runtime/js.lisp, reads
+;; "Suspending" on every engine, "promising" only where there is the
+;; first), made JavaScript's there, is made so here too.  (Code compiled in the image
+;; takes its cells from *JS-NAME-CELLS*, its own.)
+(setq sys::*js-suspending* :unknown)
+(sys::%js-suspending-p)
+(let ((before (length sys::*js-filled-names*)))
+  (js:get (js:global "WebAssembly") "Suspending")
+  (print (or (= (length sys::*js-filled-names*) before)
+             (and sys::*js-name-cells* (nth-value 1 (gethash "Suspending" sys::*js-name-cells*)) t))))
+;; a LOAD-TIME-VALUE of a quoted cons that is no name is that constant, one
+;; object, whose changes stay
+(defun user-cell () (load-time-value '(user . cell)))
+(setf (cdr (user-cell)) 'changed)
+(print (list (eq (user-cell) (user-cell)) (cdr (user-cell))))

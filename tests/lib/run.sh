@@ -179,3 +179,17 @@ if [ "$size" -gt "$shaken" ]; then
   echo "lib: the module of one export is larger with --shake-symbols ($size bytes) than with --shake ($shaken)"; exit 1
 fi
 echo "lib: the module of one export with --shake-symbols is $size bytes (at most $max)"
+# the literal names of JavaScript of a function that nothing calls are
+# left out with it, with the heap of src/preinit.lisp and without it
+for preinit in yes no; do
+  if [ $preinit = no ]; then np="CLYSM_NO_PREINIT=1"; else np="-u CLYSM_NO_PREINIT"; fi
+  env $np bin/clysm library --shake tests/lib/one.lisp -o build/lib-test/one-$preinit.wasm \
+    > build/lib-test.log 2>&1 || { cat build/lib-test.log; exit 1; }
+  env $np bin/clysm library --shake tests/lib/one-unused-names.lisp -o build/lib-test/one-unused-$preinit.wasm \
+    > build/lib-test.log 2>&1 || { cat build/lib-test.log; exit 1; }
+  one=$(wc -c < build/lib-test/one-$preinit.wasm); unused=$(wc -c < build/lib-test/one-unused-$preinit.wasm)
+  if [ "$unused" -gt $((one + 300)) ]; then
+    echo "lib: 40 names of a function nothing calls kept $((unused - one)) bytes (preinit: $preinit)"; exit 1
+  fi
+  echo "lib: 40 names of a function nothing calls keep $((unused - one)) bytes (preinit: $preinit)"
+done

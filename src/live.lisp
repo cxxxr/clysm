@@ -35,6 +35,7 @@
     (*global-defuns* (make-hash-table :test 'eq))
     (*called-functions* (make-hash-table :test 'eq))
     (*runtime-consts* nil)
+    (*js-name-cell-globals* (make-hash-table :test 'equal))
     (*live-constants* nil)
     (*helpers* *helpers*)
     (*current-lam* nil)
