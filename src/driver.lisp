@@ -1376,11 +1376,19 @@ the image it names."
 
 (defun vector-of-globals-code (globals)
   "Instructions making a simple vector of simple vectors of the values of
-GLOBALS (names), in pieces of at most 5000 (array.new_fixed is limited to
-10000 operands)."
-  (let ((chunks (loop for rest = globals then (nthcdr 5000 rest)
-                      while rest
-                      collect (subseq rest 0 (min 5000 (length rest))))))
+GLOBALS (names), in pieces of about the square root of their number (at least
+100, at most 5000: array.new_fixed is limited to 10000 operands)."
+  ;; Every value of a piece is on the operand stack until its array.new_fixed,
+  ;; and the pieces until the last one: Firefox's baseline compiler takes time
+  ;; that grows faster than the depth of the stack (pieces of 5000 took 56 ms of
+  ;; its 71 ms on a page's 2.2 MB module, pieces of about 110 took 8 ms).
+  ;; (the size in integers only, the same on every host: the ceiling of the
+  ;; square root)
+  (let* ((n (length globals))
+         (size (min 5000 (max 100 (if (zerop n) 0 (1+ (isqrt (1- n)))))))
+         (chunks (loop for rest = globals then (nthcdr size rest)
+                       while rest
+                       collect (loop repeat size for g in rest collect g))))
     `(,@(loop for chunk in chunks
               append `(,@(loop for g in chunk collect `(:global.get ,g))
                        (:array.new_fixed :vector ,(length chunk))))
