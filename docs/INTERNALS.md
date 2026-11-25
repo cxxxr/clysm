@@ -2303,11 +2303,17 @@ JavaScript written for it (`tests/lib/package.lisp`):
   gives a promise of the library: the module is compiled by
   `WebAssembly.compile`, which leaves the thread free meanwhile (a page
   draws, its events run), then instantiated and its toplevel forms run in
-  the calling thread as `library()` does. Embedded bytes are still decoded
-  (and decompressed) in the calling thread first. Once it is settled,
-  `library()` is that library; called again, it gives the same promise. A
-  `useLibrary` module given before is the one compiled; one given while it
-  compiles wins over it.
+  the calling thread as `library()` does. A non-embedded library's file is
+  read asynchronously (`compileSource` of `host/lib.mjs`, whose module
+  `loadSync` takes as its option `compiled`, keeping the file's location
+  and `.debug`); embedded bytes are still decoded (and decompressed) in the
+  calling thread first. Once it is settled, `library()` is that library;
+  called again, it gives the same promise, and after a failure it tries
+  again. A `useLibrary` module given before is the one compiled; bytes
+  given while it compiles are compiled in turn. An export called before the
+  promise is settled loads the library as `library()` does, in the calling
+  thread, decoding and compiling the module again: a page calls none
+  meanwhile.
 - `(js:library-options :embed t :compression :gzip)` additionally compresses
   the embedded bytes before base64 encoding. A bundled MIT-licensed fflate
   0.8.3 decoder restores them synchronously, including function/source names.

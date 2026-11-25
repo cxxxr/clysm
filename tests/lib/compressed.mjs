@@ -17,19 +17,51 @@ if (mode === 'lazy') {
     useLibrary(override === 'module' ? new WebAssembly.Module(bytes) : bytes,
                { debug: fs.readFileSync(file('compressed.wasm.debug')) });
   }
-  // (loadLibrary: the module compiled without holding the thread, the toplevel run once)
-  if (override === 'async' || override === 'async-bytes') {
-    const compiling = WebAssembly.compile;
-    let compiles = 0;
-    WebAssembly.compile = (...args) => { compiles++; return compiling(...args); };
-    const loading = loadLibrary();
-    assert.equal(globalThis.compressionStarts, 0);
-    const loaded = await loading;
-    WebAssembly.compile = compiling;
-    assert.equal(compiles, 1);
-    assert.equal(globalThis.compressionStarts, 1);
-    assert.equal(library(), loaded);
-    assert.equal(await loadLibrary(), loaded);
+  // (loadLibrary: the module compiled by WebAssembly.compile, never by new
+  // WebAssembly.Module, without holding the thread; the toplevel run once.
+  // async-retry: the first compiling fails, and the next call tries again;
+  // async-replace: useLibrary() gives other bytes while it compiles, which are
+  // compiled in turn; async-early: an export called before it is settled loads
+  // the library in the calling thread, which the promise then gives.)
+  if (override?.startsWith('async')) {
+    const { compile, Module } = WebAssembly;
+    let compiles = 0, modules = 0, failing = override === 'async-retry';
+    WebAssembly.compile = (...args) => {
+      compiles++;
+      if (failing) {
+        failing = false;
+        return Promise.reject(new Error('compiling failed'));
+      }
+      return compile(...args);
+    };
+    // (not counting xz's decoder, a module of 12,529 bytes made in the calling thread)
+    WebAssembly.Module = new Proxy(Module, {
+      construct(target, args) {
+        if (args[0].byteLength > 65536) modules++;
+        return Reflect.construct(target, args);
+      },
+    });
+    try {
+      if (override === 'async-retry') {
+        await assert.rejects(loadLibrary(), /compiling failed/);
+        assert.equal(globalThis.compressionStarts, 0);
+      }
+      const loading = loadLibrary();
+      assert.equal(globalThis.compressionStarts, 0);
+      if (override === 'async-replace') {
+        useLibrary(fs.readFileSync(file('compressed.wasm')), { debug: fs.readFileSync(file('compressed.wasm.debug')) });
+      }
+      if (override === 'async-early') assert.equal(other.other(), 42);
+      const loaded = await loading;
+      assert.equal(globalThis.compressionStarts, 1);
+      assert.equal(library(), loaded);
+      assert.equal(await loadLibrary(), loaded);
+      assert.deepEqual([compiles, modules], {
+        'async-retry': [2, 0], 'async-replace': [2, 0], 'async-early': [1, 1],
+      }[override] ?? [1, 0]);
+    } finally {
+      Object.assign(WebAssembly, { compile, Module });
+    }
     assert.throws(() => useLibrary(new Uint8Array()), /loaded already/);
   }
 } else assert.equal(globalThis.compressionStarts, 1);

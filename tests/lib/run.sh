@@ -52,6 +52,7 @@ bin/clysm library --shake tests/lib/lazy.lisp tests/lib/package.lisp -o build/li
 echo '{ "type": "module" }' > build/lib-test/lazy/package.json
 node tests/lib/package.mjs build/lib-test/lazy lazy > build/lib-test/lazy.out 2> build/lib-test/lazy.err || { cat build/lib-test/lazy.out build/lib-test/lazy.err; exit 1; }
 cat build/lib-test/lazy.out
+node tests/lib/package.mjs build/lib-test/lazy lazy async > build/lib-test/lazy-async.out 2>&1 || { cat build/lib-test/lazy-async.out; exit 1; }
 if ! grep -qx 'to the standard error' build/lib-test/lazy.err || grep -q 'to the standard error' build/lib-test/lazy.out; then
   echo "lib: what the lazy library writes to its standard output is not on the standard error output"; exit 1
 fi
@@ -60,6 +61,7 @@ bin/clysm library --shake tests/lib/embed.lisp tests/lib/package.lisp -o build/l
 echo '{ "type": "module" }' > build/lib-test/embedded/package.json
 node tests/lib/package.mjs build/lib-test/embedded embedded > build/lib-test/embedded.out 2> build/lib-test/embedded.err || { cat build/lib-test/embedded.out build/lib-test/embedded.err; exit 1; }
 cat build/lib-test/embedded.out
+node tests/lib/package.mjs build/lib-test/embedded embedded async > build/lib-test/embedded-async.out 2>&1 || { cat build/lib-test/embedded-async.out; exit 1; }
 if ! grep -qx 'to the standard error' build/lib-test/embedded.err || grep -q 'to the standard error' build/lib-test/embedded.out; then
   echo "lib: what the embedded library of :output :error writes to its standard output is not on the standard error output"; exit 1
 fi
@@ -76,6 +78,9 @@ node tests/lib/compressed.mjs build/lib-test/compressed-lazy lazy bytes || exit 
 node tests/lib/compressed.mjs build/lib-test/compressed-lazy lazy module || exit 1
 node tests/lib/compressed.mjs build/lib-test/compressed-lazy lazy async || exit 1
 node tests/lib/compressed.mjs build/lib-test/compressed-lazy lazy async-bytes || exit 1
+node tests/lib/compressed.mjs build/lib-test/compressed-lazy lazy async-retry || exit 1
+node tests/lib/compressed.mjs build/lib-test/compressed-lazy lazy async-replace || exit 1
+node tests/lib/compressed.mjs build/lib-test/compressed-lazy lazy async-early || exit 1
 # XZ uses an embedded Wasm decoder; applications still need no fetch or JSPI.
 for mode in eager lazy; do
   options=tests/lib/compressed-xz.lisp
@@ -89,6 +94,9 @@ node tests/lib/compressed.mjs build/lib-test/compressed-xz-lazy lazy bytes || ex
 node tests/lib/compressed.mjs build/lib-test/compressed-xz-lazy lazy module || exit 1
 node tests/lib/compressed.mjs build/lib-test/compressed-xz-lazy lazy async || exit 1
 node tests/lib/compressed.mjs build/lib-test/compressed-xz-lazy lazy async-bytes || exit 1
+node tests/lib/compressed.mjs build/lib-test/compressed-xz-lazy lazy async-retry || exit 1
+node tests/lib/compressed.mjs build/lib-test/compressed-xz-lazy lazy async-replace || exit 1
+node tests/lib/compressed.mjs build/lib-test/compressed-xz-lazy lazy async-early || exit 1
 node tests/lib/xz.mjs || exit 1
 # the printer without the reader's macro functions
 bin/clysm library --shake tests/lib/print-only.lisp -o build/lib-test/print-only.wasm > build/lib-test.log 2>&1 \

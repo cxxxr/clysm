@@ -219,10 +219,18 @@ function withLocation(source, options) {
   return { ...options, location: (source instanceof URL ? source : pathToFileURL(path.resolve(source))).href };
 }
 
-// The same, synchronously (for CommonJS callers).
-export function loadSync(source, options = {}) {
-  let module = source;
-  if (!(source instanceof WebAssembly.Module)) {
+// SOURCE's module, compiled with WebAssembly.compile, or null for a
+// WebAssembly.Module: given to loadSync as the option COMPILED.
+export async function compileSource(source) {
+  if (source instanceof WebAssembly.Module) return null;
+  return WebAssembly.compile(await bytesOf(source));
+}
+
+// The same, synchronously (for CommonJS callers).  COMPILED, an option, is
+// SOURCE's module compiled already (compileSource): SOURCE is not read.
+export function loadSync(source, { compiled, ...options } = {}) {
+  let module = compiled ?? source;
+  if (!(module instanceof WebAssembly.Module)) {
     const bytes = (source instanceof URL || typeof source === 'string')
       ? fs.readFileSync(source instanceof URL ? fileURLToPath(source) : source)
       : source;
