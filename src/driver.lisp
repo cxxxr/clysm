@@ -1382,10 +1382,13 @@ GLOBALS (names), in pieces of about the square root of their number (at least
   ;; and the pieces until the last one: Firefox's baseline compiler takes time
   ;; that grows faster than the depth of the stack (pieces of 5000 took 56 ms of
   ;; its 71 ms on a page's 2.2 MB module, pieces of about 110 took 8 ms).
-  (let* ((size (min 5000 (max 100 (ceiling (sqrt (length globals))))))
+  ;; (the size in integers only, the same on every host: the ceiling of the
+  ;; square root)
+  (let* ((n (length globals))
+         (size (min 5000 (max 100 (if (zerop n) 0 (1+ (isqrt (1- n)))))))
          (chunks (loop for rest = globals then (nthcdr size rest)
                        while rest
-                       collect (subseq rest 0 (min size (length rest))))))
+                       collect (loop repeat size for g in rest collect g))))
     `(,@(loop for chunk in chunks
               append `(,@(loop for g in chunk collect `(:global.get ,g))
                        (:array.new_fixed :vector ,(length chunk))))
