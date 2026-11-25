@@ -2299,7 +2299,15 @@ JavaScript written for it (`tests/lib/package.lisp`):
   program whose standard output is a protocol). A lazy library's modules
   have no `create` or `default`. A constant is a copy there, not the value
   the loaded library has: an object that Lisp changes later is better a
-  function's value.
+  function's value. `loadLibrary()` loads it ahead of the first call and
+  gives a promise of the library: the module is compiled by
+  `WebAssembly.compile`, which leaves the thread free meanwhile (a page
+  draws, its events run), then instantiated and its toplevel forms run in
+  the calling thread as `library()` does. Embedded bytes are still decoded
+  (and decompressed) in the calling thread first. Once it is settled,
+  `library()` is that library; called again, it gives the same promise. A
+  `useLibrary` module given before is the one compiled; one given while it
+  compiles wins over it.
 - `(js:library-options :embed t :compression :gzip)` additionally compresses
   the embedded bytes before base64 encoding. A bundled MIT-licensed fflate
   0.8.3 decoder restores them synchronously, including function/source names.

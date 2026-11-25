@@ -293,9 +293,12 @@ ${locationHelper}import { makeClass } from './clysm/jsffi.mjs';
 ${embed ? `// The module, ${compressionLabel}in base64 (${kept.length} decoded bytes).\nconst embedded = '${embedded}';\n${embeddedDebugText}let source = null;` : (locations.length ? 'let source = null;' : `let source = new URL('./${name}.wasm', import.meta.url);`)}
 let given = {};
 let lib = null;
+// (the module loadLibrary() compiled, of the source it was given then)
+let compiled = null;
+let loading = null;
 ${embed ? `const __clysm_defaults = ${embeddedOptions};\n` : outputOptions}
 export function library() {
-  lib ??= loadSync(${embed ? 'source ?? bytesOfBase64(embedded)' : locations.length ? 'source ?? __clysm_module_file()' : 'source'}, { ...__clysm_defaults, ${embeddedDebug ? '...(source ? {} : { debug: __clysm_debug_bytes }), ' : ''}...given, classes${entrypoints.length ? ', modules: { ...entryModules, ...given.modules }, entryContexts' : ''} });
+  lib ??= loadSync(compiled ?? ${embed ? 'source ?? bytesOfBase64(embedded)' : locations.length ? 'source ?? __clysm_module_file()' : 'source'}, { ...__clysm_defaults, ${embeddedDebug ? '...(source ? {} : { debug: __clysm_debug_bytes }), ' : ''}...given, classes${entrypoints.length ? ', modules: { ...entryModules, ...given.modules }, entryContexts' : ''} });
   return lib;
 }
 
@@ -303,6 +306,25 @@ export function useLibrary(module, options = {}) {
   if (lib) throw new Error('useLibrary: the library of ${name}.wasm is loaded already');
   source = module;
   given = options;
+  compiled = null;
+}
+
+// library(), with the module compiled by WebAssembly.compile, which leaves the
+// thread free meanwhile (a page draws): the bytes are still decoded, and the
+// module instantiated and its toplevel forms run, in the calling thread. Once
+// it is settled library() is that library; one already loaded is given as it is.
+export function loadLibrary() {
+  loading ??= (async () => {
+    const from = source;
+    const bytes = lib ? null : ${embed ? 'from ?? bytesOfBase64(embedded)' : 'from'};
+    if (bytes instanceof Uint8Array) {
+      const module = await WebAssembly.compile(bytes);
+      // (not if useLibrary() gave another module meanwhile)
+      if (!lib && source === from) compiled = module;
+    }
+    return library();
+  })();
+  return loading;
 }
 
 export const classes = {};
@@ -323,6 +345,7 @@ export interface Library {
 }
 export declare function library(): Library;
 export declare function useLibrary(module: ${embed ? 'Uint8Array | WebAssembly.Module' : 'string | URL | Uint8Array | WebAssembly.Module'}, options?: Record<string, unknown>): void;
+export declare function loadLibrary(): Promise<Library>;
 export declare const classes: Record<string, any>;
 ${entrypoints.length ? 'export declare function registerEntry(name: string, context: { url: string; modules: Record<string, unknown>; environment: Record<string, string | undefined> }): unknown;\n' : ''}
 `);

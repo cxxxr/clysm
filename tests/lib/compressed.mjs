@@ -11,11 +11,26 @@ const lib = await import(url('compressed.mjs'));
 const other = await import(url('other.mjs'));
 if (mode === 'lazy') {
   assert.equal(globalThis.compressionStarts, 0);
-  if (override) {
-    const { useLibrary } = await import(url('compressed.library.mjs'));
+  const { useLibrary, loadLibrary, library } = await import(url('compressed.library.mjs'));
+  if (override === 'bytes' || override === 'module' || override === 'async-bytes') {
     const bytes = fs.readFileSync(file('compressed.wasm'));
     useLibrary(override === 'module' ? new WebAssembly.Module(bytes) : bytes,
                { debug: fs.readFileSync(file('compressed.wasm.debug')) });
+  }
+  // (loadLibrary: the module compiled without holding the thread, the toplevel run once)
+  if (override === 'async' || override === 'async-bytes') {
+    const compiling = WebAssembly.compile;
+    let compiles = 0;
+    WebAssembly.compile = (...args) => { compiles++; return compiling(...args); };
+    const loading = loadLibrary();
+    assert.equal(globalThis.compressionStarts, 0);
+    const loaded = await loading;
+    WebAssembly.compile = compiling;
+    assert.equal(compiles, 1);
+    assert.equal(globalThis.compressionStarts, 1);
+    assert.equal(library(), loaded);
+    assert.equal(await loadLibrary(), loaded);
+    assert.throws(() => useLibrary(new Uint8Array()), /loaded already/);
   }
 } else assert.equal(globalThis.compressionStarts, 1);
 assert.equal(lib.next(), 1);

@@ -74,6 +74,8 @@ for mode in eager lazy; do
 done
 node tests/lib/compressed.mjs build/lib-test/compressed-lazy lazy bytes || exit 1
 node tests/lib/compressed.mjs build/lib-test/compressed-lazy lazy module || exit 1
+node tests/lib/compressed.mjs build/lib-test/compressed-lazy lazy async || exit 1
+node tests/lib/compressed.mjs build/lib-test/compressed-lazy lazy async-bytes || exit 1
 # XZ uses an embedded Wasm decoder; applications still need no fetch or JSPI.
 for mode in eager lazy; do
   options=tests/lib/compressed-xz.lisp
@@ -85,6 +87,8 @@ for mode in eager lazy; do
 done
 node tests/lib/compressed.mjs build/lib-test/compressed-xz-lazy lazy bytes || exit 1
 node tests/lib/compressed.mjs build/lib-test/compressed-xz-lazy lazy module || exit 1
+node tests/lib/compressed.mjs build/lib-test/compressed-xz-lazy lazy async || exit 1
+node tests/lib/compressed.mjs build/lib-test/compressed-xz-lazy lazy async-bytes || exit 1
 node tests/lib/xz.mjs || exit 1
 # the printer without the reader's macro functions
 bin/clysm library --shake tests/lib/print-only.lisp -o build/lib-test/print-only.wasm > build/lib-test.log 2>&1 \
