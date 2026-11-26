@@ -45,3 +45,12 @@
 (defun user-cell () (load-time-value '(user . cell)))
 (setf (cdr (user-cell)) 'changed)
 (print (list (eq (user-cell) (user-cell)) (cdr (user-cell))))
+;; the names the runtime reads itself on the way of every call that gives an
+;; object ("__clysm_js_error", %JS-RESULT-RAW) and of every call from
+;; JavaScript ("length", %JS-RUN) are such cells too, not strings made
+;; JavaScript's at each call; a JavaScript exception is still read by them
+(print (js:get (js:funcall (js:eval "(f) => ({v: f(1, 2)})") (lambda (a b) (+ a b))) "v"))
+(print (mapcar (lambda (name) (and (find name sys::*js-filled-names* :key #'car :test #'equal) t))
+               '("__clysm_js_error" "length")))
+(print (handler-case (js:funcall (js:eval "() => { throw new TypeError('no') }"))
+         (js:js-error (e) (list (js:js-error-name e) (js:js-error-message e)))))

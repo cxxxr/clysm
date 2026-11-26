@@ -1112,6 +1112,12 @@ rounded toward zero is, and the remainder number - (-0.0 * divisor) then."
         (%set-schar s i (%digit-char (%fxrem x base)))
         (setq x (%fxtruncate x base))))))
 
+;;; A large integer is printed in decimal by halves: divided by a power of
+;;; ten of about half its digits, each part printed (recursively) and the low
+;;; one padded with zeros.  The helper's passes by 10^9 are quadratic in
+;;; divisions of an i64 (each pass over the whole number); the divisions here
+;;; cost products of digits.
+(defconstant +%decimal-split-bits+ 3000)
 (defun %integer-to-string (n base)
   ;; (the helpers write integers within 64 bits, and of any size in base 10)
   (or (%int64-to-string n base)
@@ -1121,12 +1127,6 @@ rounded toward zero is, and the remainder number - (-0.0 * divisor) then."
               (%int-decimal-string n))
           (%bignum-to-string n base))))
 
-;;; A large integer is printed in decimal by halves: divided by a power of
-;;; ten of about half its digits, each part printed (recursively) and the low
-;;; one padded with zeros.  The helper's passes by 10^9 are quadratic in
-;;; divisions of an i64 (each pass over the whole number); the divisions here
-;;; cost products of digits.
-(defconstant +%decimal-split-bits+ 3000)
 (defun %big-decimal-string (n)
   (let ((neg (minusp n)))
     (let ((s (%big-decimal-digits (if neg (- n) n))))

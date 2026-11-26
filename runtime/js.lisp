@@ -109,58 +109,6 @@ JavaScript that it leaves throws what was thrown, as it was."))
 (%define-condition-message js:js-error (c)
   "JavaScript error: ~@[~A: ~]~A" (%condition-slot c 'name) (%condition-slot c 'message))
 
-(defun %js-result (r)
-  "The value R of a call, converted (JS:TO-LISP), after %JS-RESULT-RAW."
-  (js:to-lisp (%js-result-raw r)))
-
-(defun %js-result-raw (r)
-  "Signal a Lisp error for a JavaScript exception boxed by the host's apply:
-the original condition if it is the Error of a Lisp error (a Lisp function
-called from JavaScript), otherwise a JS:JS-ERROR.  Otherwise R, unconverted."
-  (when (eql (%js-typeof r) 5)
-    (let ((msg (%js-get r (%js-string "__clysm_js_error"))))
-      (when (eql (%js-typeof msg) 4)
-        (let* ((value (%js-get r (%js-string "value")))
-               ;; The host only exposes a condition originating in this
-               ;; instance. Foreign LispErrors remain JavaScript exceptions.
-               (condition (%js-get r (%js-string "lispCondition"))))
-          (if (and condition (eql (%js-typeof condition) 9))
-              (error (%js-unwrap-lisp condition))
-              (error 'js:js-error
-                     :value (js:to-lisp value)
-                     :thrown value
-                     :name (and (member (%js-typeof value) '(5 6))
-                                (let ((name (%js-get value (%js-string "name"))))
-                                  (and (eql (%js-typeof name) 4) (js:to-lisp name))))
-                     :message (js:to-lisp msg)))))))
-  r)
-
-(defun js:call (object method &rest args)
-  (let ((o (js:to-js object)))
-    (%js-result (%js-apply (%js-get o (js:to-js method)) o (%js-args args)))))
-
-(defun js:funcall (function &rest args)
-  (%js-result (%js-apply (js:to-js function) (%js-special 1) (%js-args args))))
-
-;;; The same, giving the value as JavaScript has it (not converted by
-;;; JS:TO-LISP): a value of JavaScript (JS:JS-VALUE-P), for which JS:TYPEOF
-;;; tells undefined, null and false apart, and a string that stays
-;;; JavaScript's (a long text handed on, or read a part of, without being
-;;; copied into Lisp).
-
-(defun js:get-raw (object key)
-  "The property KEY of OBJECT, as JavaScript has it (see JS:GET)."
-  (%js-get (js:to-js object) (js:to-js key)))
-
-(defun js:call-raw (object method &rest args)
-  "JS:CALL, giving the value as JavaScript has it."
-  (let ((o (js:to-js object)))
-    (%js-result-raw (%js-apply (%js-get o (js:to-js method)) o (%js-args args)))))
-
-(defun js:funcall-raw (function &rest args)
-  "JS:FUNCALL, giving the value as JavaScript has it."
-  (%js-result-raw (%js-apply (js:to-js function) (%js-special 1) (%js-args args))))
-
 ;;; A name written as a literal string (a property, a method, a global) is a
 ;;; string of Lisp, and made a string of JavaScript at every call: reading a
 ;;; property by its name cost six times what it costs with the name already
@@ -219,6 +167,61 @@ called from JavaScript), otherwise a JS:JS-ERROR.  Otherwise R, unconverted."
   ;; and of making the string, copied into each JS:GET of a literal name,
   ;; was most of it)
   `(%js-cell-name (%js-name-literal ,string)))
+
+(defun %js-result (r)
+  "The value R of a call, converted (JS:TO-LISP), after %JS-RESULT-RAW."
+  (js:to-lisp (%js-result-raw r)))
+
+(defun %js-result-raw (r)
+  "Signal a Lisp error for a JavaScript exception boxed by the host's apply:
+the original condition if it is the Error of a Lisp error (a Lisp function
+called from JavaScript), otherwise a JS:JS-ERROR.  Otherwise R, unconverted."
+  ;; (the names are made JavaScript's once, %JS-LITERAL-NAME: this is on the
+  ;; way of every call that gives an object, and making "__clysm_js_error"
+  ;; a JavaScript string each time was a copy through the memory for each)
+  (when (eql (%js-typeof r) 5)
+    (let ((msg (%js-get r (%js-literal-name "__clysm_js_error"))))
+      (when (eql (%js-typeof msg) 4)
+        (let* ((value (%js-get r (%js-literal-name "value")))
+               ;; The host only exposes a condition originating in this
+               ;; instance. Foreign LispErrors remain JavaScript exceptions.
+               (condition (%js-get r (%js-literal-name "lispCondition"))))
+          (if (and condition (eql (%js-typeof condition) 9))
+              (error (%js-unwrap-lisp condition))
+              (error 'js:js-error
+                     :value (js:to-lisp value)
+                     :thrown value
+                     :name (and (member (%js-typeof value) '(5 6))
+                                (let ((name (%js-get value (%js-literal-name "name"))))
+                                  (and (eql (%js-typeof name) 4) (js:to-lisp name))))
+                     :message (js:to-lisp msg)))))))
+  r)
+
+(defun js:call (object method &rest args)
+  (let ((o (js:to-js object)))
+    (%js-result (%js-apply (%js-get o (js:to-js method)) o (%js-args args)))))
+
+(defun js:funcall (function &rest args)
+  (%js-result (%js-apply (js:to-js function) (%js-special 1) (%js-args args))))
+
+;;; The same, giving the value as JavaScript has it (not converted by
+;;; JS:TO-LISP): a value of JavaScript (JS:JS-VALUE-P), for which JS:TYPEOF
+;;; tells undefined, null and false apart, and a string that stays
+;;; JavaScript's (a long text handed on, or read a part of, without being
+;;; copied into Lisp).
+
+(defun js:get-raw (object key)
+  "The property KEY of OBJECT, as JavaScript has it (see JS:GET)."
+  (%js-get (js:to-js object) (js:to-js key)))
+
+(defun js:call-raw (object method &rest args)
+  "JS:CALL, giving the value as JavaScript has it."
+  (let ((o (js:to-js object)))
+    (%js-result-raw (%js-apply (%js-get o (js:to-js method)) o (%js-args args)))))
+
+(defun js:funcall-raw (function &rest args)
+  "JS:FUNCALL, giving the value as JavaScript has it."
+  (%js-result-raw (%js-apply (js:to-js function) (%js-special 1) (%js-args args))))
 
 (declaim (not-copied %js-get-named %js-get-raw-named %js-set-named))
 ;; (the test of the cell in each, written out: one call on the way of every
@@ -359,7 +362,7 @@ arguments unconverted (FUNCTION itself, exported or given elsewhere, is not)."
 (defun %js-run (closure args async)
   (let* ((f (%js-unwrap-lisp closure))
          (raw (eq (%closure-name f) '%raw-js-function-mark))
-         (n (js:to-lisp (%js-get args (%js-string "length"))))
+         (n (js:to-lisp (%js-get args (%js-literal-name "length"))))
          (lisp-args (let ((r nil))
                       (dotimes (i n (nreverse r))
                         (let ((a (%js-get args (%js-number (%to-double i)))))
