@@ -1,8 +1,7 @@
 ;;;; tests/ansi/driver.lisp — run part of the ANSI test suite (ansi-test) in Clysm.
-;;;;   clysm script tests/ansi/driver.lisp CATEGORY [START [END]]
+;;;;   clysm script tests/ansi/driver.lisp CATEGORY [START]
 ;;;; Loads the rt framework and CATEGORY/load.lsp, then runs the tests from
-;;;; index START (to the end, or up to index END, not included), printing one
-;;;; line per test:  "@@ <index> <PASS|FAIL> <name>".
+;;;; index START, printing one line per test:  "@@ <index> <PASS|FAIL> <name>".
 ;;;; A crash (Wasm trap) kills the process; the outer script then resumes.
 
 (in-package :cl-user)
@@ -23,7 +22,6 @@
 (defvar *args* (cdr sys::*posix-argv*))
 (defvar *category* (first *args*))
 (defvar *start* (if (second *args*) (parse-integer (second *args*)) 0))
-(defvar *end* (and (third *args*) (parse-integer (third *args*))))
 
 (let ((*default-pathname-defaults* *ansi-root*))
   (load "rt-package.lsp")
@@ -55,7 +53,7 @@
 (format t "~&@@TOTAL ~D~%" (length (cdr rt::*entries*)))
 (let ((i 0))
   (dolist (entry (cdr rt::*entries*))
-    (when (and (>= i cl-user::*start*) (or (null cl-user::*end*) (< i cl-user::*end*)))
+    (when (>= i cl-user::*start*)
       (format t "~&@@START ~D ~S~%" i (rt::name entry))
       (finish-output)
       (let ((ok (let ((*default-pathname-defaults* (merge-pathnames "sandbox/" cl-user::*ansi-root*))

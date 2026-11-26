@@ -40,8 +40,12 @@ if [ -n "$batch" ]; then
     name=$(basename "$f" .lisp)
     echo "build/tests/$name.wasm build/tests/$name.build $f" >> build/tests/jobs.txt
   done
-  # (a time limit: a compiler that does not finish is a failure, not a wait)
+  # (a time limit: a compiler that does not finish is a failure, not a wait.
+  # tests/cases/deep-forms.lisp has a definition that SBCL does not finish
+  # with: it waits for --definition-seconds, which is the time of the whole
+  # run when it is the 20 seconds of a build)
   sbcl --script tools/build-many.lisp ${SHAKE:+--shake} ${THROWN:+--thrown-exits} -j "$JOBS" --timeout 600 \
+    --definition-seconds "${TEST_DEFINITION_SECONDS:-3}" \
     build/tests/jobs.txt > build/tests/jobs.log 2>&1
 fi
 run_case() {

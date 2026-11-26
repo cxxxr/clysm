@@ -1,5 +1,6 @@
 ;;;; tools/build-many.lisp — compile many programs with the SBCL-hosted compiler
-;;;; usage: sbcl --script tools/build-many.lisp [--shake] [--thrown-exits] [-j N] [--timeout SECONDS] JOBS
+;;;; usage: sbcl --script tools/build-many.lisp [--shake] [--thrown-exits] [-j N] [--timeout SECONDS]
+;;;;          [--definition-seconds SECONDS] JOBS
 ;;;; JOBS is a file of lines "OUT.wasm LOG FILE...": each program is compiled
 ;;;; as `tools/build.lisp [--shake] [--thrown-exits] OUT.wasm FILE...` would,
 ;;;; its messages written to LOG.  The runtime is compiled once; each program
@@ -7,7 +8,9 @@
 ;;;; of processors by default), which is what takes most of the time of a
 ;;;; small program.  One line "@@ OUT.wasm STATUS" is printed per program
 ;;;; (STATUS 0 when it was compiled, "timeout" when it took more than
-;;;; SECONDS, 600 by default).
+;;;; SECONDS, 600 by default).  --definition-seconds is how long the host may
+;;;; take to compile one definition of a program before it is compiled again
+;;;; in the way that always ends (*HOST-DEFINITION-SECONDS*, 20 by default).
 (require :sb-posix)
 (load (merge-pathnames "../load.lisp" *load-truename*))
 (in-package :clysm)
@@ -66,6 +69,8 @@ and exits."
               ((equal (first args) "--thrown-exits") (pop args) (setf *thrown-exits* t))
               ((equal (first args) "-j") (pop args) (setf nprocs (parse-integer (pop args))))
               ((equal (first args) "--timeout") (pop args) (setf timeout (parse-integer (pop args))))
+              ((equal (first args) "--definition-seconds") (pop args)
+               (setf *host-definition-seconds* (parse-integer (pop args))))
               (t (return))))
   (let ((jobs (with-open-file (s (first args))
                 (loop for line = (read-line s nil) while line
