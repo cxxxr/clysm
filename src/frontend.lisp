@@ -7,6 +7,27 @@
 
 (in-package :clysm)
 
+;;; The symbols the compiler makes, and those the macros of the program make
+;;; when the compiler expands them (CL:GENSYM in what it evaluates is this:
+;;; *PACKAGE-FUNCTION-SUBSTITUTIONS*), are numbered by a counter of its own,
+;;; from 0 in each program (COMPILE-PROGRAM): the names of those that are in
+;;; the module are the same whichever Lisp the compiler runs on.  CL:GENSYM
+;;; also counted the host's own (SBCL compiling an expander, or Clysm's
+;;; evaluator expanding the macros of one each time it runs).
+
+;;; (at compile time too: the compiler's own macros call it, and when Clysm
+;;; compiles the compiler they are evaluated before the file is loaded)
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defvar *cgensym-counter* 0 "The number in the name of the next CGENSYM.")
+
+  (defun cgensym (&optional (x "G"))
+    "A new uninterned symbol, as GENSYM makes, numbered by *CGENSYM-COUNTER*."
+    (let ((*print-base* 10) (*print-radix* nil))
+      (if (integerp x)
+          (make-symbol (concatenate 'string "G" (princ-to-string x)))
+          (make-symbol (concatenate 'string (string x)
+                                    (princ-to-string (prog1 *cgensym-counter* (incf *cgensym-counter*)))))))))
+
 (defstruct (lvar (:print-function (lambda (v s d) (declare (ignore d))
                                     (format s "#<LVAR ~S>" (lvar-name v)))))
   name owner captured mutated special (refs 0) ignorable
@@ -490,7 +511,7 @@ At (SAFETY 0) in ENV the value is trusted: (THE SPEC FORM), unchecked."
       form
       (if (and env (trust-types-p env))
           `(the ,spec ,form)
-          (let ((v (gensym "V")))
+          (let ((v (cgensym "V")))
             `(let ((,v ,form))
                (if ,(type-test-form v spec)
                    ,v
@@ -577,7 +598,7 @@ the required parameters of the types SYM's FTYPE gives checked on entry."
           (let ((checks (loop for p in (subseq ll 0 nreq) for spec in specs
                               when (and (ftype-useful-spec-p spec) (not (declared-spec p decls))
                                         (not (member p (declared-specials decls))))
-                                collect (list p (gensym (symbol-name p)) spec))))
+                                collect (list p (cgensym (symbol-name p)) spec))))
             (cond
               ((null checks) fn-form)
               ;; (SAFETY 0): the parameters are declared of the types, unchecked
@@ -611,7 +632,7 @@ of a proclaimed result type checked, or FORM."
              (not (env-lookup-fun env op))
              (not (macro-function-in op env))
              (ftype-result-spec op))
-        (let ((g (gensym "V")) (spec (ftype-result-spec op)))
+        (let ((g (cgensym "V")) (spec (ftype-result-spec op)))
           (if (trust-types-p env)
               `(the ,spec (clysm-sys::%ftype-raw ,form))
               `(let ((,g (clysm-sys::%ftype-raw ,form))) ,(type-checked-form g spec))))
@@ -769,7 +790,7 @@ another literal list that ends with NIL.")
       (multiple-value-bind (creation init)
           (let ((r nil)) (call-in-live-state (lambda () (setq r (multiple-value-list (make-load-form obj)))))
             (values (first r) (second r)))
-        (let ((o (gensym "OBJECT")))
+        (let ((o (cgensym "OBJECT")))
           `(lambda ()
              (let ((,o ,creation))
                (rplaca ',cell ,o)
@@ -849,7 +870,7 @@ discriminating function), shares no cons with the literals of the program."
   (note-literal-scope obj)
   (if (and (member *static-image* '(:user :loaded)) (not (or (symbolp obj) (numberp obj) (characterp obj)))
            (not (plain-constant-p obj)))
-      (let ((cell (gethash obj *static-literal-cells*)) (c (gensym "CELL")))
+      (let ((cell (gethash obj *static-literal-cells*)) (c (cgensym "CELL")))
         (unless cell
           (setq cell (setf (gethash obj *static-literal-cells*) (list nil)))
           (setf (gethash cell *static-cell-conses*) t)
@@ -1073,7 +1094,7 @@ when it may be copied into callers compiled later, else NIL."
                (not (gethash op *global-defuns*)))
       (let ((e (fasl-inline-entry op)))
         (when (and e (eq (fourth e) (symbol-function op)))
-          (let* ((temps (loop for nil in (cdr form) collect (gensym "ARG")))
+          (let* ((temps (loop for nil in (cdr form) collect (cgensym "ARG")))
                  (copy (inline-lambda-application op (first e) (second e) temps (cdr form))))
             (when copy
               (return-from live-inline-call
@@ -1090,7 +1111,7 @@ when it may be copied into callers compiled later, else NIL."
     ;; (not of a later form: the source recorded is then that of a
     ;; definition before the batch, whose copy is guarded by its own closure)
     (when (and rec (batch-guarded-p op) (< (gethash op *batch-forms*) *batch-form-index*))
-      (let* ((temps (loop for nil in (cdr form) collect (gensym "ARG")))
+      (let* ((temps (loop for nil in (cdr form) collect (cgensym "ARG")))
              (copy (inline-lambda-application op (first rec) (second rec) temps (cdr form))))
         (return-from live-inline-call
           (and copy
@@ -1101,7 +1122,7 @@ when it may be copied into callers compiled later, else NIL."
     (when rec
       (let ((closure (funcall *live-inline-closure-hook* op)))
         (when (and closure (not (eq closure (third rec))))
-          (let* ((temps (loop for nil in (cdr form) collect (gensym "ARG")))
+          (let* ((temps (loop for nil in (cdr form) collect (cgensym "ARG")))
                  ;; (the body sees none of the caller's lexical bindings)
                  (copy (inline-lambda-application op (first rec) (second rec) temps (cdr form))))
             (when copy
@@ -1146,7 +1167,7 @@ the arguments do not fit (they are then passed by a call).  The body (not
 the arguments, which are the caller's code) is converted with DEPTH-VAR,
 the depth of copies, one more."
   (let* ((pl (parse-lambda-list ll))
-         (temps (loop for nil in args collect (gensym "A")))
+         (temps (loop for nil in args collect (cgensym "A")))
          (rest-temps temps) (rest-args args)
          (bindings nil))
     (flet ((next () (pop rest-args) (pop rest-temps)))
@@ -1299,7 +1320,7 @@ the code point of every arm was boxed).")
     ;; a function of another form of the batch: a guarded direct call
     ;; (NOTINLINE: through the function cell)
     (when (and (not (gethash op *notinline*)) (batch-guarded-p op))
-      (let ((temps (loop for nil in (cdr form) collect (gensym "ARG"))))
+      (let ((temps (loop for nil in (cdr form) collect (cgensym "ARG"))))
         (return-from convert-compound
           (convert (if (member op *local-notinline*)
                        `(clysm-sys::%batch-cell-call ,op ,@(cdr form))
@@ -1534,7 +1555,7 @@ unboxed (PARAM-CHECK-CODE)."
           (t (not (eql speed 3))))))
 
 (defun add-debug-frame (lam body)
-  (let* ((frame-sym (gensym "FRAME")) (var-sym (gensym "VAR"))
+  (let* ((frame-sym (cgensym "FRAME")) (var-sym (cgensym "VAR"))
          (frame-lv (new-lvar frame-sym))
          (slots (make-hash-table :test 'eq)) (names nil) (n 0))
     (labels ((slot (lv)
@@ -1598,7 +1619,7 @@ helper signals UNDEFINED-FUNCTION when it is empty).  (FDEFINITION of the
 name was a call of SYS::%FUNCTION-NAME-SYMBOL and SYMBOL-FUNCTION's tests
 for a macro, some 300 octets at each #'F of a function of another file of
 the system.)"
-  (let ((l (gensym "FCELL")))
+  (let ((l (cgensym "FCELL")))
     `(:the function
            (:wasm :eqref ()
                   ((:block ,l :eqref
@@ -1789,7 +1810,7 @@ the system.)"
 
 (defun make-host-macro-expander (name ll body)
   "Build a host lambda form (FORM ENV) for a macro."
-  (let ((form (gensym "FORM")) (envv (gensym "ENV"))
+  (let ((form (cgensym "FORM")) (envv (cgensym "ENV"))
         (whole nil) (envp nil) (clean nil))
     ;; extract &whole and &environment
     (loop while ll
@@ -1832,11 +1853,26 @@ target package names designate the host packages that mirror them.")
 
 (defun substitute-host-functions (form)
   "Substitutions for code the compiler evaluates itself: the environment
-functions (only when hosted by SBCL; in the self-hosted compiler the image's
-own functions accept compiler environments) and the package functions."
-  (let ((*substitutions* (append #-clysm *env-function-substitutions*
-                                 *package-function-substitutions*)))
+functions, the package functions and GENSYM (CGENSYM).  The environment
+functions on both Lisps: the self-hosted compiler's image takes compiler
+environments in its own, but a macro's expander that expands a form with
+them (MACROEXPAND-1 in the compiler macro of STRING=) then had the image's
+macros (those the host expands, PROCESS-DEFMACRO), not the compiler's."
+  (let ((*substitutions* (append *env-function-substitutions*
+                                 *package-function-substitutions*
+                                 '((gensym . cgensym)))))
     (substitute-env-functions form)))
+
+;;; The substitutions keep each cons under which nothing is replaced (REUSE-
+;;; CONS): a form is substituted more than once (the expander of a macro in
+;;; the self-hosted compiler is interpreted, then compiled:
+;;; GLOBAL-MACRO-EXPANDER), and the data of its backquotes is what its
+;;; expansions return.  A copy was other literals than the expansions before
+;;; it gave, where the runtime's code shares none (CONST-GLOBAL-1).
+
+(defun reuse-cons (x a d)
+  "X when its car is A and its cdr D, else a cons of them."
+  (if (and (eq a (car x)) (eq d (cdr x))) x (cons a d)))
 
 (defun substitute-env-functions (form)
   "Replace calls (and #') of the functions in *ENV-FUNCTION-SUBSTITUTIONS*,
@@ -1845,28 +1881,33 @@ leaving quoted data alone."
         ((eq (car form) 'quote) form)
         ;; a backquote template is data except where it is unquoted
         ((eq (car form) 'clysm-sys::quasiquote)
-         (list (car form) (substitute-in-template (second form) 1)))
+         (let ((template (substitute-in-template (second form) 1)))
+           (if (eq template (second form)) form (list (car form) template))))
         ((and (eq (car form) 'function) (consp (cdr form)) (symbolp (second form)))
          (let ((e (assoc (second form) (or *substitutions* *env-function-substitutions*))))
            (if e (list 'function (cdr e)) form)))
         (t (let ((e (and (symbolp (car form)) (assoc (car form) (or *substitutions* *env-function-substitutions*)))))
-             (cons (if e (cdr e) (substitute-env-functions (car form)))
-                   (labels ((walk (tail)
-                              (if (consp tail)
-                                  (cons (substitute-env-functions (car tail)) (walk (cdr tail)))
-                                  tail)))
-                     (walk (cdr form))))))))
+             (reuse-cons form
+                         (if e (cdr e) (substitute-env-functions (car form)))
+                         (labels ((walk (tail)
+                                    (if (consp tail)
+                                        (reuse-cons tail (substitute-env-functions (car tail)) (walk (cdr tail)))
+                                        tail)))
+                           (walk (cdr form))))))))
 
 (defun substitute-in-template (x depth)
   (cond ((atom x) x)
         ((member (car x) '(clysm-sys::unquote clysm-sys::unquote-splicing))
-         (list (car x) (if (= depth 1)
-                           (substitute-env-functions (second x))
-                           (substitute-in-template (second x) (1- depth)))))
+         (let* ((in (second x))
+                (out (if (= depth 1)
+                         (substitute-env-functions in)
+                         (substitute-in-template in (1- depth)))))
+           (if (eq out in) x (list (car x) out))))
         ((eq (car x) 'clysm-sys::quasiquote)
-         (list (car x) (substitute-in-template (second x) (1+ depth))))
-        (t (cons (substitute-in-template (car x) depth)
-                 (substitute-in-template (cdr x) depth)))))
+         (let ((out (substitute-in-template (second x) (1+ depth))))
+           (if (eq out (second x)) x (list (car x) out))))
+        (t (reuse-cons x (substitute-in-template (car x) depth)
+                       (substitute-in-template (cdr x) depth)))))
 
 (defun host-compile (lambda-form)
   (setf lambda-form (substitute-host-functions lambda-form))
@@ -1979,8 +2020,8 @@ bound to the values of ARGS, when their number is known; else NIL."
     (let* ((args (mapcar (lambda (a) (cmacroexpand a env)) args))
            (counts (mapcar (lambda (a) (form-nvalues a env)) args)))
       (when (and (every #'identity counts) (<= (reduce #'+ counts) 16))
-        (let* ((fvar (unless (and (consp f) (eq (car f) 'function)) (gensym "F")))
-               (vars (mapcar (lambda (n) (loop repeat n collect (gensym "V"))) counts))
+        (let* ((fvar (unless (and (consp f) (eq (car f) 'function)) (cgensym "F")))
+               (vars (mapcar (lambda (n) (loop repeat n collect (cgensym "V"))) counts))
                (call `(funcall ,(or fvar f) ,@(apply #'append vars)))
                (body (reduce (lambda (a+vs inner)
                                (destructuring-bind (a . vs) a+vs
@@ -1992,7 +2033,7 @@ bound to the values of ARGS, when their number is known; else NIL."
 
 (defun convert-block (name body env)
   (let* ((blk (make-blk :name name :lam *current-lam*))
-         (tag (new-lvar (gensym "BLOCK-TAG")))
+         (tag (new-lvar (cgensym "BLOCK-TAG")))
          (node (progn (setf (blk-tag-var blk) tag)
                       (convert-body body (env-extend env (list :block name blk))))))
     ;; a block no RETURN-FROM refers to (that of a DEFUN, of an inline
@@ -2019,7 +2060,7 @@ bound to the values of ARGS, when their number is known; else NIL."
          (tags (loop for x in body when (or (symbolp x) (integerp x)) collect x))
          (new-env (apply #'env-extend env
                          (loop for tg in tags for i from 1 collect (list :tag tg tb i)))))
-    (setf (tb-tag-var tb) (new-lvar (gensym "TAGBODY-TAG")))
+    (setf (tb-tag-var tb) (new-lvar (cgensym "TAGBODY-TAG")))
     (setf (tb-tags tb) tags)
     ;; segments: index 0 = before first tag
     (let ((segments (list (list 0))) (i 0))
@@ -2306,7 +2347,7 @@ converted so far call (the end of a unit, or of a part of it)."
   (if (= (length form) 3) `(clysm-sys::%rassoc-eql ,@(cdr form)) form))
 
 (defun chain-compare (op args)
-  (let ((temps (loop for nil in args collect (gensym "C"))))
+  (let ((temps (loop for nil in args collect (cgensym "C"))))
     `(let ,(mapcar #'list temps args)
        (and ,@(loop for (a b) on temps while b collect (list op a b))))))
 
@@ -2471,7 +2512,7 @@ ones (the unbound marker for those not given) and the list of the rest."
                                   :test #'string=)))
             (let* ((e (assoc name (svref u 2)))
                    (d (if e (cdr e) (let ((s (make-symbol "DISCRIMINATOR"))) (push (cons name s) (svref u 2)) s)))
-                   (vars (let ((r nil)) (dotimes (i k r) (push (gensym "A") r))))
+                   (vars (let ((r nil)) (dotimes (i k r) (push (cgensym "A") r))))
                    (npos (+ (first shape) (second shape))))
               `(let ,(mapcar #'list vars (cdr form))
                  (if (clysm-sys::%static-known-p ,d)
@@ -2634,14 +2675,14 @@ NIL when there is nothing it could call."
            (n (first shape))
            (spreadp (and shape (not (and (eql (second shape) 0) (eql (third shape) 0)))))
            (methods nil) (fsyms nil) (index 0) (nfns 0)
-           (vars (let ((r nil)) (dotimes (i (if shape (+ (first shape) (second shape) (third shape)) 0) r) (push (gensym "A") r))))
+           (vars (let ((r nil)) (dotimes (i (if shape (+ (first shape) (second shape) (third shape)) 0) r) (push (cgensym "A") r))))
            ;; the cell of the keywords of the generic function itself (0: its
            ;; keyword arguments are not checked), after those of the functions
            (keys-cell nil)
            ;; the cell of the generic function's own function of the spread
            ;; arguments, for the calls that the tree does not take
            (core-cell nil)
-           (disc (gensym "DISC")) (tree (gensym "TREE")) (cells-var (gensym "CELLS")) (state (gensym "STATE"))
+           (disc (cgensym "DISC")) (tree (cgensym "TREE")) (cells-var (cgensym "CELLS")) (state (cgensym "STATE"))
            (checks nil) (class-cells nil) (nclasses 0) (leaves 0) (tails nil) (tail-forms nil)
            ;; NIL (the standard method combination) or (operator . options)
            ;; of a short one: from the DEFGENERIC of the unit, else from the
@@ -2728,7 +2769,7 @@ NIL when there is nothing it could call."
                  ;; (methods called in turn), defined once
                  (let ((e (assoc key tails :test #'equal)))
                    (unless e
-                     (let ((sym (make-symbol "NEXT")) (vs (mapcar (lambda (v) (declare (ignore v)) (gensym "A")) vars)))
+                     (let ((sym (make-symbol "NEXT")) (vs (mapcar (lambda (v) (declare (ignore v)) (cgensym "A")) vars)))
                        (setq e (cons key sym))
                        (push e tails)
                        (push (list sym vs (funcall maker vs)) tail-forms)))
@@ -2802,7 +2843,7 @@ NIL when there is nothing it could call."
                          ;; the keyword arguments of a call with some are
                          ;; checked against the keywords of the generic
                          ;; function (in its cell) and of these methods
-                         (let ((more (car (last vars))) (g (gensym "KEYS"))
+                         (let ((more (car (last vars))) (g (cgensym "KEYS"))
                                (mkeys (let ((r nil))
                                         (dolist (m ms (nreverse r))
                                           (let ((k (svref m 6)))
@@ -2862,7 +2903,7 @@ NIL when there is nothing it could call."
                                       (push (clysm-sys::%ct-substitute (second (assoc k (clysm-sys::%ct-kinds))) x) tests))
                                     (branch (if (cdr tests) `(or ,@(reverse tests)) (car tests)) (car e)))))
                               ;; the classes of the unit, then those defined before
-                              (let ((subs nil) (l (gensym "L")) (classes nil) (names nil))
+                              (let ((subs nil) (l (cgensym "L")) (classes nil) (names nil))
                                 (maphash (lambda (cname e)
                                            (when (some (lambda (c) (member c (clysm-sys::%ct-class-cpl u cname))) cspecs)
                                              (push (cons (car e) cname) classes)))

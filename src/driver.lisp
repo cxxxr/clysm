@@ -376,7 +376,13 @@ the image now."
       (unless (or (eq (symbol-package name) (find-package :cl))
                   ;; (the image that builds the program has the macros of its runtime)
                   (eq *static-image* :runtime))
-        (setf (macro-function name) fn))
+        (setf (macro-function name)
+              ;; (what the host expands, when it pleases: SBCL when it
+              ;; compiles a definition, Clysm's evaluator each time it runs
+              ;; one; the symbols made then are not counted, CGENSYM)
+              (lambda (form env)
+                (let ((*cgensym-counter* *cgensym-counter*))
+                  (funcall fn form env)))))
       ;; target side: install a macro function at load time.  Until the
       ;; runtime has defined DESTRUCTURING-BIND, definitions are deferred.
       (if (target-macros-ready-p)
@@ -412,7 +418,7 @@ the image now."
   "A (lambda (form env) ...) form for the target, using the target's
 destructuring-bind (defined by the runtime)."
   (declare (ignore name))
-  (let ((form (gensym "FORM")) (envv (gensym "ENV"))
+  (let ((form (cgensym "FORM")) (envv (cgensym "ENV"))
         (whole nil) (envp nil) (clean nil))
     (loop while ll
           do (let ((x (if (consp ll) (pop ll) (prog1 ll (setf ll nil) (push '&rest clean)))))
@@ -1467,17 +1473,37 @@ module compiled in it), and :IMAGE-OBJECTS, :IMAGE-MUTABLES and
             (read s))))
 
 (defun clysm-version (runtime-dir)
-  "\"0.1.N (COMMIT)\" of the git checkout of RUNTIME-DIR's Clysm, or NIL."
+  "\"0.1.N (COMMIT)\" of the git checkout of RUNTIME-DIR's Clysm, else the
+line of its VERSION file (tools/build-npm.sh writes it), else, in the
+self-hosted compiler (which runs no git), the version of the compiler itself
+(of the same checkout when it was built: tools/build-selfhost.sh), or NIL.
+A program compiled by either compiler has the same version (a form of its
+own, which takes a place among the toplevel forms)."
+  (or (clysm-git-version runtime-dir)
+      (ignore-errors
+       (with-open-file (in (merge-pathnames "../VERSION" runtime-dir))
+         (read-line in)))
+      ;; (the runtime's variable, in SYSTEM: CLYSM-SYS is a package of the
+      ;; compiler's own in clysmc.wasm)
+      #+clysm (let ((sym (find-symbol "*CLYSM-VERSION*" "SYSTEM")))
+                (and sym (boundp sym) (symbol-value sym)))))
+
+(defun clysm-git-version (runtime-dir)
   (ignore-errors
    (let* ((dir (truename (make-pathname :name nil :type nil :version nil :defaults runtime-dir)))
           (root (namestring (make-pathname :name nil :type nil :version nil
                                            :directory (butlast (pathname-directory dir))
                                            :defaults dir)))
+          ;; (what git printed, or NIL when it failed: outside a checkout it
+          ;; says so, and that was taken for the version)
           (git (lambda (&rest args)
-                 (string-trim '(#\Newline #\Space)
-                              (with-output-to-string (s)
-                                #+sbcl (sb-ext:run-program "git" (list* "-C" root args) :search t :output s)
-                                #-sbcl (progn s args nil))))))
+                 (let* ((code nil)
+                        (out (with-output-to-string (s)
+                               #+sbcl (setq code (sb-ext:process-exit-code
+                                                  (sb-ext:run-program "git" (list* "-C" root args)
+                                                                      :search t :output s :error nil)))
+                               #-sbcl (progn s args nil))))
+                   (and (eql code 0) (string-trim '(#\Newline #\Space) out))))))
      (let ((count (funcall git "rev-list" "--count" "HEAD")) (commit (funcall git "rev-parse" "--short" "HEAD")))
        (and (plusp (length count)) (plusp (length commit))
             (format nil "0.1.~A (~A)" count commit))))))
@@ -1513,6 +1539,9 @@ when the module loads.  Returns the number of bytes written."
     (unless (find *preinit-through* files :key #'truename :test #'equal)
       (error "PREINIT-THROUGH must name one of the program's source files")))
   (reset-compiler)
+  ;; (the uninterned symbols of the module are named alike on SBCL and in
+  ;; the self-hosted compiler: CGENSYM)
+  (setf *cgensym-counter* 0)
   (setf *runtime-top-count* nil *preinit-parts* nil *preinit-table-check* nil)
   ;; (the prologue of _start makes the cells of the literal names of
   ;; JavaScript unless the module is shaken without the heap of
