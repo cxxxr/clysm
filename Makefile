@@ -77,7 +77,7 @@ selfhost:
 	tools/build-selfhost.sh
 
 SRCS = src/package.lisp src/wasm.lisp src/reader.lisp src/layout.lisp src/frontend.lisp \
-       src/types.lisp src/inline.lisp src/codegen.lisp src/prims.lisp src/typed.lisp src/driver.lisp src/hostenv.lisp src/selfhost.lisp
+       src/types.lisp src/inline.lisp src/codegen.lisp src/prims.lisp src/typed.lisp src/driver.lisp src/hostenv.lisp src/preinit.lisp src/selfhost.lisp
 
 # stage 2 and stage 3 compilers (built by the Wasm-hosted compiler) must be identical
 fixpoint: selfhost
@@ -87,7 +87,8 @@ fixpoint: selfhost
 
 # test, test-link, test-fasl-images, test-lib, test-asdf, test-static, selfhost
 # and the modes STATIC, INTERP, NATIVE and SELFHOST of tools/run-tests.sh,
-# some of them at the same time (tools/test-all.sh)
+# some of them at the same time, then tests/lib/selfhost-same.sh
+# (tools/test-all.sh)
 test-all:
 	tools/test-all.sh
 

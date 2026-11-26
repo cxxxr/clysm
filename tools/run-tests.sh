@@ -63,7 +63,7 @@ run_case() {
     if [ -n "$batch" ]; then
       grep -qxF "@@ build/tests/$name.wasm 0" build/tests/jobs.log
     else
-      if [ -n "$STATIC" ]; then compile="bin/clysm build -o"; else compile="node host/run.mjs build/clysmc.wasm"; fi
+      if [ -n "$STATIC" ]; then compile="bin/clysm build -o"; else compile="node host/run.mjs build/clysmc.wasm${SHAKE:+ --shake}"; fi
       timeout 600 $compile "build/tests/$name.wasm" "$f" > "build/tests/$name.build" 2>&1
     fi || { echo "FAIL $name (compile)" > "build/tests/$name.res"; return; }
     timeout 20 node host/run.mjs "build/tests/$name.wasm" > "build/tests/$name.out" 2> "build/tests/$name.err"

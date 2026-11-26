@@ -2,9 +2,11 @@
 // Clysm without SBCL: the command of the npm package (tools/build-npm.sh).
 // The compiler is the self-hosted one, build/clysmc.wasm, run on Node.js.
 //
-//   clysm compile [--shake] FILE... [-o OUT.wasm]
-//   clysm library [--shake] FILE... -o DIR/NAME.wasm   (NAME.wasm.debug, NAME.mjs, NAME.d.ts too)
-//   clysm run [--shake] FILE... [-- ARGS]
+//   clysm compile [OPTION...] FILE... [-o OUT.wasm]
+//   clysm library [OPTION...] FILE... -o DIR/NAME.wasm   (NAME.wasm.debug, NAME.mjs, NAME.d.ts too)
+//   clysm run [OPTION...] FILE... [-- ARGS]
+//     OPTION: --shake --shake-symbols --shake-why REPORT --eval-string --thrown-exits
+//             --preinit-through FILE (as bin/clysm compile)
 //   clysm build [--system NAME]... [--asd FILE.asd]... [--load FILE]... [--asdf] [--shake] [--eval FORM]... [--main FUNCTION [--image]] [-o OUT.wasm] [FILE...]
 //                            (an application with its ASDF systems as one module)
 //   clysm exec OUT.wasm [ARGS]
@@ -153,50 +155,57 @@ async function test(args) {
   console.log(`watching ${watched.size} directories`);
 }
 
-function compile(files, out, shake) {
+function compile(files, out, shake, options = []) {
   if (!compiler) {
     console.error('clysm: the compiler (clysmc.wasm) is missing; build it with tools/build-selfhost.sh');
     process.exit(1);
   }
-  const args = [runHost, compiler, ...(shake ? ['--shake'] : []), path.resolve(out),
+  const args = [runHost, compiler, ...(shake ? ['--shake'] : []), ...options, path.resolve(out),
                 ...files.map((f) => path.resolve(f)), '--runtime', path.join(root, 'runtime')];
   const status = run(args);
   if (status !== 0) process.exit(status);
 }
 
+// the options of the compiler (as bin/clysm and tools/build.lisp take
+// them): --shake, and those that imply it, are SHAKE, the others OPTIONS
 function parse(args) {
-  const files = []; let out = null; let shake = false; let rest = [];
+  const files = []; let out = null; let shake = false; let rest = []; const options = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '-o') out = args[++i];
     else if (a === '--shake') shake = true;
-    else if (a === '--') { rest = args.slice(i + 1); break; }
+    else if (a === '--shake-symbols' || a === '--eval-string' || a === '--thrown-exits') options.push(a);
+    else if (a === '--shake-why') options.push(a, path.resolve(args[++i]));
+    else if (a === '--preinit-through') {
+      if (i + 1 >= args.length) { console.error('--preinit-through needs a source file'); process.exit(1); }
+      options.push(a, path.resolve(args[++i]));
+    } else if (a === '--') { rest = args.slice(i + 1); break; }
     else files.push(a);
   }
-  return { files, out, shake, rest };
+  return { files, out, shake, options, rest };
 }
 
 const [cmd, ...args] = process.argv.slice(2);
 switch (cmd) {
   case 'compile': {
-    const { files, out, shake } = parse(args);
-    compile(files, out || 'a.wasm', shake);
+    const { files, out, shake, options } = parse(args);
+    compile(files, out || 'a.wasm', shake, options);
     break;
   }
   case 'library': {
-    const { files, out, shake } = parse(args);
+    const { files, out, shake, options } = parse(args);
     if (!out) { console.error('clysm library: -o DIR/NAME.wasm is needed'); process.exit(1); }
     fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true });
-    compile(files, out, shake);
+    compile(files, out, shake, options);
     process.exit(run([path.join(root, 'tools', 'gen-library.mjs'), path.resolve(out)]));
     break;
   }
   case 'run': {
-    const { files, shake, rest } = parse(args);
+    const { files, shake, options, rest } = parse(args);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'clysm-'));
     const out = path.join(dir, 'run.wasm');
     try {
-      compile(files, out, shake);
+      compile(files, out, shake, options);
       process.exitCode = run([runHost, out, ...rest]);
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
     break;
@@ -255,7 +264,7 @@ switch (cmd) {
     break;
   }
   default:
-    console.log(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(1, 14)
+    console.log(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(1, 15)
       .map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
     process.exit(cmd ? 1 : 0);
 }

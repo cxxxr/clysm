@@ -38,6 +38,17 @@
   (let ((p (%host-package-or-die package)))
     (or (gethash p *host->target-name*) (package-name p))))
 
+(defun clysm-sys::%host-constantp (form &optional env)
+  "CONSTANTP of the code that the compiler runs (macro bodies): as Clysm's
+(runtime/core.lisp), a quoted form, an object other than a symbol or a cons,
+or a constant variable.  SBCL's also folds calls ((EXPT 2 80) is constant
+there): an expander that binds no variable for a constant argument made other
+code on SBCL than in the compiler in Wasm."
+  (declare (ignore env))
+  (cond ((symbolp form) (constantp form))
+        ((consp form) (eq (car form) 'quote))
+        (t t)))
+
 (defun clysm-sys::%host-macro-function* (sym &optional env)
   (macro-function-in sym (if (cenv-p env) env nil)))
 

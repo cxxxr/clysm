@@ -31,5 +31,10 @@ for p in $pids; do
   if [ "$t" = selfhost ]; then tail -n 1 "build/test-all/$t.log"; else cat "build/test-all/$t.log"; fi
   [ $s = 0 ] || { echo "make $t: FAIL"; status=1; [ "$t" = selfhost ] && selfhost_failed=1; }
 done
-[ -n "$selfhost_failed" ] || mode SELFHOST=1
+if [ -z "$selfhost_failed" ]; then
+  mode SELFHOST=1
+  # (the outputs of the Wasm-hosted compiler are those of SBCL's)
+  echo "tests/lib/selfhost-same.sh"
+  tests/lib/selfhost-same.sh || status=1
+fi
 exit $status

@@ -525,6 +525,33 @@ fixed point), and the whole test suite passes when compiled by the Wasm-hosted
 compiler (`SELFHOST=1 tools/run-tests.sh`). Inside the image, macro expanders
 and `eval-when` code are run by Clysm's own evaluator.
 
+The compiler in Wasm compiles a program to **the same octets** as the
+compiler on SBCL: `src/selfhost.lisp` takes the options of `tools/build.lisp`
+(`--shake`, `--shake-symbols`, `--shake-why`, `--eval-string`,
+`--thrown-exits`, `--preinit-through`) and calls the same driver
+(`compile-program`); a shaken module starts from the heap of its runtime
+made when it is compiled (`src/preinit.lisp`, which runs a module on
+Node.js through the runtime's `%run-program-sync`); uninterned symbols are
+counted per program (`cgensym`), not by how often the host expanded a macro;
+relative names are of the working directory on both; and the code that the
+compiler runs (macro bodies) has Clysm's `constantp` on both
+(`%host-constantp`: SBCL's folds calls, and a `setf` expander bound no
+variable for `(expt 2 80)` there). The 188 files of a
+real program (Code Map) compiled with `--shake` are 11,897,079 octets from
+either, in 30 s from the compiler in Wasm (2.1 GB) and 49 s on SBCL. It
+builds the REPL image as `tools/build-repl.lisp` does (`clysmc.wasm
+--repl-image OUT.wasm [MAIN...]`, `build-repl-image`), the same but for the
+image's identifier (`sys::*image-id*`, random in every build).
+
+So Clysm needs SBCL only to start from nothing. With a `clysmc.wasm` (the npm
+package has one), `tools/build-selfhost.sh --no-sbcl` compiles the compiler
+with it (`CLYSMC`, else `build/clysmc.wasm`; the result is that compiler
+again) and the REPL image with the new one, and `bin/clysm` without SBCL on
+the `PATH` is `bin/clysm.mjs`, which compiles with `build/clysmc.wasm`, runs
+the REPL image, and finds the files of an ASDF system in it
+(`tools/system-files.lisp`). The tests (`tools/run-tests.sh`) still take
+what SBCL prints as what a test should print.
+
 ## Compiling inside the running image
 
 The REPL image (`tools/build-repl.lisp`) embeds the compiler. `compile`, `load`

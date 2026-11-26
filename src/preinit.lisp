@@ -458,7 +458,8 @@ makes, or :FAIL."
 
 (defun ph-getenv (name)
   #+sbcl (sb-ext:posix-getenv name)
-  #-sbcl (clysm-sys::%getenv name))
+  ;; (sys::, the runtime's: in the self-hosted compiler CLYSM-SYS is a package of its own)
+  #-sbcl (sys::%getenv name))
 
 (defun ph-run-node (script module variables)
   "Run the host's SCRIPT on the file MODULE with node, in this process's
@@ -482,7 +483,7 @@ environment without its CLYSM_ variables and NODE_OPTIONS and with VARIABLES
                              collect (cons name ""))
                      variables)))
     (multiple-value-bind (out err code)
-        (clysm-sys::%run-program-sync (list (or (ph-getenv "NODE") "node") script module) :environment env)
+        (sys::%run-program-sync (list (or (ph-getenv "NODE") "node") script module) :environment env)
       (values (concatenate 'string out err) code))))
 
 (defun ph-run-runtime (m init prologue runtime-tops drop)
