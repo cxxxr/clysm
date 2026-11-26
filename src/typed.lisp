@@ -509,7 +509,7 @@ of the squares is zero, subnormal or not finite, or the result not a single)."
                  ((and (eq name 'length) (not (ty-only-p ty +k-list+)))
                   ;; of unknown type: a simple vector or string, or a vector
                   ;; with a fill pointer, inline; else the function
-                  (let ((e (new-local)) (f (new-local)) (done (gensym "LEN")))
+                  (let ((e (new-local)) (f (new-local)) (done (cgensym "LEN")))
                     `(,@(cg a) (:local.set ,e)
                       (:block ,done :i32
                         (:local.get ,e) (:ref.test :vector)
@@ -880,7 +880,7 @@ that kind; everything else goes to the helper, which handles every array."
          ;; (a subscript known to be a 32-bit integer, (+ i j) of fixnums: as
          ;; an i32; out of range it is beyond any dimension compared unsigned)
          (fx (i32-arg-p sub)) (ie (unless fx (new-local)))
-         (hit (gensym "HIT")))
+         (hit (cgensym "HIT")))
     (progn
       (values `(,@(cg a) (:local.set ,e)
                 ,@(if fx
@@ -946,7 +946,7 @@ ROW-MAJOR-AREF) of a simple array whose storage kind is known, with fixnum
 subscripts: the element is read inline when the subscripts are within the
 bounds (else the generic function, which signals the error) and left in REP.
 NIL when the types are not known or REP cannot hold the elements."
-  (let ((name (node-op-name node)) (slow (gensym "SLOW")) (done (gensym "ELT")))
+  (let ((name (node-op-name node)) (slow (cgensym "SLOW")) (done (cgensym "ELT")))
     (multiple-value-bind (setup locate kind d k slow-args) (array-locate-code name (cddr node) slow)
       (when setup
         (let ((conv (storage-raw-rep-code kind rep)))
@@ -976,7 +976,7 @@ string read inline (TYPED-ELT-CODE), as an i32: the element of the storage
 as it is, with no character made and taken apart again (babel's encoders,
 (CHAR-CODE (SCHAR S I)) per character).  NIL when NODE is not such a read."
   (when (and (member (car node) '(:prim :call)) (member (node-op-name node) '(char schar)))
-    (let ((slow (gensym "SLOW")) (done (gensym "ELT")))
+    (let ((slow (cgensym "SLOW")) (done (cgensym "ELT")))
       (multiple-value-bind (setup locate kind d k slow-args) (array-locate-code (node-op-name node) (cddr node) slow)
         (when (and setup (eq kind :string))
           `(,@setup
@@ -1001,7 +1001,7 @@ element: at (SAFETY 0), an integer within 64 bits."
 fixnum subscripts: inline when the subscripts are within the bounds and the
 value is of the element type (else the generic function).  With EFFECT the
 code leaves nothing, else the value."
-  (let* ((name (node-op-name node)) (slow (gensym "SLOW")) (done (gensym "STORE"))
+  (let* ((name (node-op-name node)) (slow (cgensym "SLOW")) (done (cgensym "STORE"))
          (val (car (last (cddr node)))) (vty (node-ty val)))
     (multiple-value-bind (setup locate kind d k slow-args) (array-locate-code name (butlast (cddr node)) slow)
       (when setup
@@ -1088,7 +1088,7 @@ overlapping ranges as if through a buffer), else NIL."
                ;; engine then knows a variable to be a cons from there on,
                ;; and drops the casts of its later reads)
                ((and (not (ty-bottom-p aty)) (zerop (logand (ty-bits aty) +k-null+)))
-                (let ((ok (gensym "CONS")))
+                (let ((ok (cgensym "CONS")))
                   `((:block ,ok (:ref :cons)
                       ,@(cg a) (:br_on_cast ,ok :eqref (:ref :cons))
                       (:call ,(if (= field 0) :car :cdr)) :unreachable)
@@ -1169,7 +1169,7 @@ or %STRUCT-ISET node, and whether it sets."
 (defun tstruct-field-check-code (o c ty s l slow)
   "Code branching to SLOW unless local O is of the type TY (left in S) and of
 the structure class (local C) or one including it."
-  (let ((hit (gensym "HIT")))
+  (let ((hit (cgensym "HIT")))
     `((:block ,hit nil
         (:local.get ,o) (:ref.test ,ty) :i32.eqz (:hint 0) (:br_if ,slow)
         (:local.get ,o) (:ref.cast! ,ty) (:local.tee ,s) (:struct.get ,ty 0) (:local.tee ,l) (:local.get ,c)
@@ -1234,7 +1234,7 @@ which it is compiled in two arms for the shadows of its variables.")
 *TESTED-SHADOWS*) is of its structure's Wasm type (its shadow is the cast
 object there, not null as far as the engine sees), and otherwise (the
 shadows as INITS, the code of STRUCT-SHADOW-INIT-CODE, sets them)."
-  (let ((done (gensym "SHV")) (slow (gensym "SHNULL")))
+  (let ((done (cgensym "SHV")) (slow (cgensym "SHNULL")))
     `((:block ,done ,block-type
         (:block ,slow nil
           ,@(loop for (nil sh idx ty) in shadows
@@ -1308,7 +1308,7 @@ it in S as the Wasm type TY, branching to SLOW where it may not be of it."
                  (or (eq rep :eqref) (and (eq rep :f64) (eq (nth k kinds) :d))))
         (let* ((ty (tshape-type kinds)) (d (eq (nth k kinds) :d)) (known (struct-class-known-p x cls))
                (o (new-local)) (c (new-local)) (s (new-local `(:ref :null ,ty))) (l (new-local))
-               (slow (gensym "SLOW")) (done (gensym "TREF")))
+               (slow (cgensym "SLOW")) (done (cgensym "TREF")))
           ;; (the class is only loaded where it is compared)
           `(,@(cg x) (:local.set ,o) ,@(unless known `(,@(cg cls) (:local.set ,c)))
             ,@(cg-effect i) ,@(cg-effect kinds-node)
@@ -1332,7 +1332,7 @@ it in S as the Wasm type TY, branching to SLOW where it may not be of it."
         (let* ((ty (tshape-type kinds)) (d (eq (nth k kinds) :d)) (raw (and d (ty-double-p (node-ty v))))
                (known (struct-class-known-p x cls))
                (o (new-local)) (c (new-local)) (s (new-local `(:ref :null ,ty))) (l (new-local))
-               (val (new-local)) (f (new-local :f64)) (slow (gensym "SLOW")) (done (gensym "TSET")))
+               (val (new-local)) (f (new-local :f64)) (slow (cgensym "SLOW")) (done (cgensym "TSET")))
           `(,@(cg x) (:local.set ,o) ,@(unless known `(,@(cg cls) (:local.set ,c))) ,@(cg-effect i)
             ,@(if raw `(,@(cg-rep v :f64) (:local.set ,f)) `(,@(cg v) (:local.set ,val)))
             ,@(cg-effect kinds-node)
@@ -1420,7 +1420,7 @@ it in S as the Wasm type TY, branching to SLOW where it may not be of it."
           (when (and ty name (eq xcls name))
             ;; (an instance of a structure including it that has a slot vector: the function)
             (let* ((o (new-local)) (s (new-local `(:ref :null ,ty))) (tmp (new-local))
-                   (slow (gensym "SLOW")) (done (gensym "SREF"))
+                   (slow (cgensym "SLOW")) (done (cgensym "SREF"))
                    (check (known-struct-check-code o ty s slow x))
                    (access `((:local.get ,s)
                              ,@(if vp
@@ -1636,7 +1636,7 @@ doubles, else the generic comparison; or NIL."
     (when (and (spec-cmp-node-p node) (not *no-fuse*)
                (or (f64-evident-p a) (f64-evident-p b))
                (logtest (ty-bits (node-ty a)) +k-double+) (logtest (ty-bits (node-ty b)) +k-double+))
-      (let ((slow (gensym "SLOW")) (done (gensym "CMP"))
+      (let ((slow (cgensym "SLOW")) (done (cgensym "CMP"))
             (ba (new-local)) (fa (new-local :f64)) (bb (new-local)) (fb (new-local :f64))
             (p (if (eq (car node) :prim) (second node) (find-primitive name 2))))
         (when p
@@ -1669,7 +1669,7 @@ doubles, else the generic comparison; or NIL."
   (let* ((name (node-op-name node)) (args (cddr node)) (a (first args)) (b (second args)))
     (when (and (spec-cmp-node-p node) (not *no-fuse*) (or (dual-lref-p a) (dual-lref-p b))
                (logtest (ty-bits (node-ty a)) +k-int+) (logtest (ty-bits (node-ty b)) +k-int+))
-      (let ((slow (gensym "SLOW")) (done (gensym "CMP"))
+      (let ((slow (cgensym "SLOW")) (done (cgensym "CMP"))
             (ba (new-local)) (va (new-local :i64)) (bb (new-local)) (vb (new-local :i64))
             (p (if (eq (car node) :prim) (second node) (find-primitive name 2))))
         (when p
@@ -1699,7 +1699,7 @@ doubles, else the generic comparison; or NIL."
                (logtest (ty-bits (node-ty a)) +k-int+) (logtest (ty-bits (node-ty b)) +k-int+)
                (or (and (i64-arg-p a) (not (ty-fixnum-p (node-ty a))) (not (i64-arg-p b)))
                    (and (i64-arg-p b) (not (ty-fixnum-p (node-ty b))) (not (i64-arg-p a)))))
-      (let ((slow (gensym "SLOW")) (done (gensym "CMP"))
+      (let ((slow (cgensym "SLOW")) (done (cgensym "CMP"))
             (ba (new-local)) (va (new-local :i64)) (bb (new-local)) (vb (new-local :i64))
             (p (if (eq (car node) :prim) (second node) (find-primitive name 2))))
         (when p
@@ -1815,7 +1815,7 @@ computed for a division by 1 unless NEED-REM)."
   (let* ((args (cddr node)) (mode (cdr (assoc (node-op-name node) *divmod-modes*)))
          (da (new-local :f64)) (db (new-local :f64)) (q (new-local :f64)) (r (new-local :f64))
          (tmp (new-local :f64)) (adj (new-local :i32)) (w (new-local :i64))
-         (slow (gensym "SLOW")) (done (gensym "DIV"))
+         (slow (cgensym "SLOW")) (done (cgensym "DIV"))
          (unit (null (second args))))
     (if (and unit (not need-rem) (not (eq want :remainder)))
         ;; one argument, the quotient only: the rounding instruction
@@ -1911,7 +1911,7 @@ computed for a division by 1 unless NEED-REM)."
           ((and (eq name 'atan) (= (length (cddr node)) 2) (float-divmod-node-p-args (cddr node)))
            `(,@(f64-arg-code (third node)) ,@(f64-arg-code (fourth node)) (:call :math-atan2)))
           ((and (eq name 'expt) (every (lambda (a) (ty-double-p (node-ty a))) (cddr node)))
-           (let ((x (new-local :f64)) (y (new-local :f64)) (r (new-local :f64)) (slow (gensym "SLOW")) (done (gensym "EXPT")))
+           (let ((x (new-local :f64)) (y (new-local :f64)) (r (new-local :f64)) (slow (cgensym "SLOW")) (done (cgensym "EXPT")))
              `(,@(cg-rep (third node) :f64) (:local.set ,x) ,@(cg-rep (fourth node) :f64) (:local.set ,y)
                (:block ,done :f64
                  (:block ,slow nil
@@ -2058,7 +2058,7 @@ eqref), the local of the remainder and its representation; or NIL."
                  (logtest (ty-bits (node-ty a)) +k-int+) (not (ty-int64-p (node-ty a))))
         (let* ((x (new-local :i64)) (y (new-local :i64)) (q (new-local :i64)) (r (new-local :i64))
                (t1 (new-local :i64)) (t2 (new-local :i64)) (rl (new-local)) (e (new-local))
-               (done (gensym "DIVQ")) (fail (gensym "DIVSLOW"))
+               (done (cgensym "DIVQ")) (fail (cgensym "DIVSLOW"))
                (tree (and (fusable-op-node-p a) (not (eq (fused-plan a nil) :no)))))
           (multiple-value-bind (leaves i64-code generic)
               (if tree
@@ -2335,7 +2335,7 @@ an accumulator when its assignments are integer arithmetic."
   (and (null (lvar-rep lv)) (not (boxed-p lv)) (gethash lv (fstate-locs *fs*)) (gethash lv *fdual-vars*)))
 
 (defun fdual-materialize-code (b f)
-  (let ((ok (gensym "FDUAL")))
+  (let ((ok (cgensym "FDUAL")))
     `((:block ,ok (:ref :eq)
         (:local.get ,b) (:br_on_non_null ,ok)
         (:local.get ,f) (:struct.new :double) (:local.tee ,b) :ref.as_non_null))))
@@ -2505,13 +2505,13 @@ the value of NODE: B null when F holds it."
   "The integer of the pair of locals B (eqref) and V (i64); one beyond the
 fixnums is kept in B (a fixnum is not: B stays null, and the next update
 reads the i64 without a test of B's object)."
-  (let ((ok (gensym "DUAL")))
+  (let ((ok (cgensym "DUAL")))
     `((:block ,ok (:ref :eq)
         ,@(dual-u64-demote-code b v)
         ,@(if f
               ;; (F: the f64 local of an accumulator that may hold an
               ;; unboxed double, B then the mark: the double is made and kept)
-              (let ((nn (gensym "DUALB")))
+              (let ((nn (cgensym "DUALB")))
                 `((:block ,nn nil
                     (:local.get ,b) :ref.is_null (:br_if ,nn)
                     (:local.get ,b) (:local.get ,f) (:call :acc-demote) (:local.tee ,b)
@@ -2658,7 +2658,7 @@ operation); NIL otherwise.  EFFECT: no value is left."
                                           (some #'dbl (cddr n))
                                           (eq (spec-leaf-class n) :d))))
                       (dbl expr))))
-      (let ((b (cdr (get-loc lv))) (fail (gensym "SLOW")) (fail2 (gensym "SLOWF")) (done (gensym "ACC")))
+      (let ((b (cdr (get-loc lv))) (fail (cgensym "SLOW")) (fail2 (cgensym "SLOWF")) (done (cgensym "ACC")))
         (multiple-value-bind (leaves i64-code generic recs) (fused-parts expr)
           ;; a step by a value of unknown type, (+ var x) or (- var x):
           ;; first as the values most often are (the accumulator in its i64,
@@ -2671,7 +2671,7 @@ operation); NIL otherwise.  EFFECT: no value is left."
             (let* ((dual (find :dual recs :key #'second)) (other (find :eqref recs :key #'second))
                    (lb (third dual)) (lv64 (fourth dual)) (lx (third other))
                    (sub (eq (prim-name (second expr)) '-))
-                   (lean (gensym "LEAN")) (r (new-local :i64)) (xi (new-local :i32))
+                   (lean (cgensym "LEAN")) (r (new-local :i64)) (xi (new-local :i32))
                    ;; the other operand is a variable that may hold an
                    ;; unboxed double (its f64 local, a null eqref)
                    (xf (and (fdual-lref-p (first other)) (fdual-local (second (first other)))))
@@ -2702,7 +2702,7 @@ operation); NIL otherwise.  EFFECT: no value is left."
                     ;; f64, before the double is made an object for the
                     ;; other paths
                     ,@(when xf
-                        (let ((nd (gensym "NOTD")))
+                        (let ((nd (cgensym "NOTD")))
                           `((:block ,nd nil
                               (:local.get ,xb) :ref.is_null :i32.eqz (:br_if ,nd)
                               ,@(if f
@@ -2743,7 +2743,7 @@ operation); NIL otherwise.  EFFECT: no value is left."
                     ;; the box of an integer within 64 bits (a sum of times,
                     ;; sizes, products): its value added here, after the
                     ;; fixnum's tests failed, before any call
-                    ,@(let ((nb (gensym "NOTBOX")) (y (new-local :i64)) (w (new-local :i64)))
+                    ,@(let ((nb (cgensym "NOTBOX")) (y (new-local :i64)) (w (new-local :i64)))
                         (progn                     ; (also in :acc-step, for the engine's copies of it)
                         `((:block ,nb nil
                             (:local.get ,lb) :ref.is_null :i32.eqz (:br_if ,nb)
@@ -2756,7 +2756,7 @@ operation); NIL otherwise.  EFFECT: no value is left."
                     ;; an accumulator that holds an unboxed double, stepped
                     ;; by a double: in f64, nothing made and nothing called
                     ,@(when f
-                        (let ((nf (gensym "NOTF")))
+                        (let ((nf (cgensym "NOTF")))
                           `((:block ,nf nil
                               (:local.get ,lb) ,@(dual-mark-code) :ref.eq :i32.eqz (:br_if ,nf)
                               (:local.get ,lx) (:ref.test :double) :i32.eqz (:br_if ,nf)

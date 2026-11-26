@@ -83,7 +83,12 @@ Returns (values bytes constants-vector direct-closures)."
       (live-compile-forms-1 forms)))
 
 (defun live-compile-forms-1 (forms)
-  (let* ((*live-mode* t)
+  (let* (;; (what the compiler names in a module of the image is not of a
+         ;; program it builds: an expander compiled while an image builds
+         ;; one, `clysm build', does not change the names of the program's
+         ;; symbols, CGENSYM)
+         (*cgensym-counter* *cgensym-counter*)
+         (*live-mode* t)
         (*live-packages* t)
         (*read-package* *package*)
         (*warnings* nil)

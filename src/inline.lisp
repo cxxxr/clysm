@@ -118,7 +118,7 @@ at SAFETY 1 and more, the test left out where the type of ARG decides it)."
              ;; calls are copied too, see REGISTER below)
              (not (and (member (car arg) '(:lambda :fref))
                        (logtest (ty-bits (decl-check-ty spec)) +k-func+))))
-        (let* ((sym (gensym "V"))
+        (let* ((sym (cgensym "V"))
                (lv (make-lvar :name sym :owner *inline-caller*))
                (env (env-extend (make-cenv) (list :var sym lv)))
                ;; (converted as code of the caller: a block of the test's
@@ -475,7 +475,7 @@ would be (BINDING is then (variable), and LET-NODE has the body)."
              (element-form (index)
                (if (integerp index)
                    (if (< index k) (sym (nth index temps)) nil)
-                   (let ((i (gensym "I")) (form nil))
+                   (let ((i (cgensym "I")) (form nil))
                      (loop for j from (- k 1) downto 0
                            do (setq form `(if (eql ,i ,j) ,(sym (nth j temps)) ,form)))
                      `(let ((,i ,index)) ,form))))
@@ -510,7 +510,7 @@ would be (BINDING is then (variable), and LET-NODE has the body)."
                            (ir (cond ((eq (second node) 'endp)
                                       (if (integerp index) (>= index k) `(clysm-sys::%fx>= ,index ,k)))
                                      ((integerp index) (max 0 (- k index)))
-                                     (t (let ((i (gensym "I")))
+                                     (t (let ((i (cgensym "I")))
                                           `(let ((,i ,index))
                                              (if (clysm-sys::%fx< ,i ,k) (clysm-sys::%fx- ,k ,i) 0))))))))))
                      ((and (eq op :call) (eq (second node) 'nth) (= (length (cddr node)) 2)
@@ -525,7 +525,7 @@ would be (BINDING is then (variable), and LET-NODE has the body)."
                            (place (fourth node)))
                       (process (third node) t mode)
                       (when (eq mode :rewrite)
-                        (let ((n (gensym "N")) (i (gensym "I"))
+                        (let ((n (cgensym "N")) (i (cgensym "I"))
                               (index (index-form (place (fourth node))))
                               (arg (third node)))
                           ;; N is evaluated before the list cursor. Invalid
