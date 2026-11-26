@@ -1,0 +1,49 @@
+# The npm package of each commit of main (tools/build-npm.sh: the compiler
+# compiled by itself and the REPL image prebuilt, for Node.js without SBCL),
+# as the release v0.1.N with build/clysm-0.1.N.tgz: a project pins Clysm by
+# that package (npm install https://github.com/cxxxr/clysm/releases/download/v0.1.N/clysm-0.1.N.tgz).
+name: release
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: release-${{ github.sha }}
+jobs:
+  npm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0             # (the version counts the commits)
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: ./.github/actions/sbcl
+      - name: Build the package
+        run: tools/build-npm.sh
+      # (it needs no SBCL: what it is for)
+      - name: Check the package without SBCL
+        run: |
+          version="0.1.$(git rev-list --count HEAD)"
+          dir="$RUNNER_TEMP/pkg"
+          mkdir -p "$dir" && tar xzf "build/clysm-$version.tgz" -C "$dir"
+          printf '(defun main () (format t "~A~%%" (+ 1 2))) (main)\n' > "$RUNNER_TEMP/hello.lisp"
+          sudo mv /usr/local/bin/sbcl /usr/local/bin/sbcl.off
+          out=$(node "$dir/package/bin/clysm.mjs" run "$RUNNER_TEMP/hello.lisp" 2>"$RUNNER_TEMP/run.err" || true)
+          script=$(node "$dir/package/bin/clysm.mjs" script "$RUNNER_TEMP/hello.lisp" 2>"$RUNNER_TEMP/script.err" || true)
+          sudo mv /usr/local/bin/sbcl.off /usr/local/bin/sbcl
+          [ "$out" = 3 ] || { echo "the package compiled and ran hello: '$out'"; cat "$RUNNER_TEMP/run.err"; exit 1; }
+          [ "$script" = 3 ] || { echo "the package's REPL image loaded hello: '$script'"; cat "$RUNNER_TEMP/script.err"; exit 1; }
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="0.1.$(git rev-list --count HEAD)"
+          if gh release view "v$version" >/dev/null 2>&1; then echo "v$version is released already"; exit 0; fi
+          gh release create "v$version" "build/clysm-$version.tgz" --target "$GITHUB_SHA" \
+            --title "clysm $version" \
+            --notes "The npm package of $(git rev-parse --short HEAD) (Node.js 24, no SBCL): \`npm install https://github.com/${GITHUB_REPOSITORY}/releases/download/v$version/clysm-$version.tgz\`"

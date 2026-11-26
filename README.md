@@ -41,6 +41,19 @@ server. It needs Chrome or Edge 137 or later and is about 22 MB.
 Requires SBCL (the cross compiler runs on it) and Node.js 22 or later;
 `js:await`, threads and the npm package need Node.js 24.
 
+Without SBCL, every commit of main is released as an npm package with the
+compiler compiled by itself and the REPL image prebuilt
+(`.github/workflows/release.yml`); it needs only Node.js 24:
+
+```
+$ npm install https://github.com/cxxxr/clysm/releases/download/v0.1.N/clysm-0.1.N.tgz
+$ npx clysm run hello.lisp
+```
+
+In a checkout, `bin/clysm` uses it as well when there is no SBCL (with
+`build/clysmc.wasm`; `tools/build-selfhost.sh --no-sbcl` rebuilds the
+compiler and the REPL image from one).
+
 ```
 $ bin/clysm repl                          # the REPL image is built on first use
 $ bin/clysm run tests/hello.lisp          # compile with the runtime and run on Node.js
