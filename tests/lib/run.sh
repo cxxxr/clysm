@@ -7,6 +7,9 @@
 cd "$(dirname "$0")/../.." || exit 1
 mkdir -p build/lib-test/sections
 JOBS=${TEST_JOBS:-$(nproc 2>/dev/null || echo 4)}
+# (the compiler's fasls, before the sections compile them at once: load.lisp
+# makes build/fasl/ when it is stale)
+sbcl --script load.lisp > build/lib-test/fasl.log 2>&1 || { cat build/lib-test/fasl.log; exit 1; }
 sections=""
 sections="$sections demo"
 section_demo() {
