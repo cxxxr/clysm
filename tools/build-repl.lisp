@@ -4,50 +4,14 @@
 ;;;; The MAIN files (by default lib/repl-main.lisp) are compiled into the image
 ;;;; after the compiler.  With the environment variable CLYSM_REDEFINABLE set,
 ;;;; calls of their functions are not bound to the definitions in the files.
+;;;; The self-hosted compiler builds the same image (BUILD-REPL-IMAGE):
+;;;;   node host/run.mjs build/clysmc.wasm --repl-image OUT.wasm [MAIN.lisp...]
 (load (merge-pathnames "../load.lisp" *load-truename*))
 (in-package :clysm)
-(defparameter *root* (merge-pathnames "../" *load-truename*))
-(defun rpath (f) (namestring (merge-pathnames f *root*)))
 (let ((out (second sb-ext:*posix-argv*))
       (mains (or (cddr sb-ext:*posix-argv*) '("lib/repl-main.lisp"))))
   (handler-case
-      (progn
-        (reset-compiler)
-        (setq *record-definitions* t)
-        (let ((*read-package* (find-target-package "SYSTEM")))
-          (dolist (f (with-open-file (s (rpath "tools/runtime-files.lisp")) (read s)))
-            (compile-source-file (rpath (format nil "runtime/~A.lisp" f))))
-          ;; argument lists and source locations of the functions and
-          ;; macros of COMMON-LISP (for SWANK)
-          (setq *record-definitions* nil)
-          (process-toplevel (recorded-definitions-form) (make-cenv))
-          (finish-runtime))
-        ;; the compiler's own CLYSM-SYS package is the image's SYSTEM package
-        (setf (gethash "CLYSM-SYS" *target-packages*) (find-package :clysm-sys))
-        (push "CLYSM-SYS" (gethash "SYSTEM" *target-nicknames*))
-        (dolist (f '("src/package" "src/wasm" "src/reader" "src/layout" "src/frontend" "src/types" "src/inline" "src/codegen"
-                     "src/prims" "src/typed" "src/driver" "src/hostenv" "src/live" "src/preinit" "src/static" "lib/live-image"))
-          (compile-source-file (rpath (concatenate 'string f ".lisp"))))
-        ;; the compiler's own functions get fewer copies of others: V8
-        ;; compiles them when they are first called, and a first DEFUN
-        ;; called 1.2 MB of them, a quarter of it copies
-        (setq *inline-big-caller-nodes* 400 *inline-caller-budget* 200
-              *inline-budget-source-p*
-              (lambda (file)
-                (and (stringp file)
-                     (or (search "src/" file) (search "lib/live-image" file)
-                         ;; (macros: run when code is compiled)
-                         (search "runtime/loop" file)))))
-        ;; with CLYSM_REDEFINABLE set, the functions of the MAIN files can be
-        ;; redefined in the running image (tools/build-ui-dev.sh)
-        (let ((*redefinable-functions* (and (sb-ext:posix-getenv "CLYSM_REDEFINABLE") t)))
-          (dolist (main mains)
-            (compile-source-file (if (probe-file main) main (rpath main)))))
-        ;; the modules compiled in the image import some runtime helpers
-        ;; from it (src/live.lisp)
-        (setf (gethash (intern "*LIVE-HELPER-IMPORTS*" "CLYSM-T/CLYSM") *initial-symbol-values*) (list t))
-        (let ((bytes (let ((*export-live-helpers* t)) (build-module))))
-          (with-open-file (o out :direction :output :element-type '(unsigned-byte 8) :if-exists :supersede)
-            (write-sequence bytes o))
-          (format *error-output* "~&; wrote ~A (~D bytes)~%" out (length bytes))))
+      (let ((n (build-repl-image out mains (merge-pathnames "../" *load-truename*)
+                                 :redefinable (and (sb-ext:posix-getenv "CLYSM_REDEFINABLE") t))))
+        (format *error-output* "~&; wrote ~A (~D bytes)~%" out n))
     (error (e) (format *error-output* "~&COMPILE ERROR: ~A~%" e) (sb-ext:exit :code 1))))

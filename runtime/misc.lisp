@@ -22,8 +22,16 @@
 
 (defun make-random-state (&optional state)
   (cond ((null state) (%make-random-state (random-state-s0 *random-state*) (random-state-s1 *random-state*)))
-        ((eq state t) (%make-random-state (logand (get-universal-time) 268435455) 362436069))
+        ;; (seeded by the host's own generator too: from the time alone, two
+        ;; processes started in the same second had the same state, and made
+        ;; the same names of temporary files, src/preinit.lisp)
+        ((eq state t) (%make-random-state (%fresh-seed (get-universal-time)) (%fresh-seed 362436069)))
         (t (%make-random-state (random-state-s0 state) (random-state-s1 state)))))
+
+(defun %fresh-seed (x)
+  "A seed of 28 bits, not 0, from X, the time and the host's random numbers."
+  (let ((host (or (ignore-errors (floor (* (js:call (js:global "Math") "random") 268435456))) 0)))
+    (max 1 (logand (logxor x (get-internal-real-time) host) 268435455))))
 
 (defun %random-bits (state)
   ;; 28-bit xorshift-style generator on fixnums

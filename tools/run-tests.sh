@@ -36,7 +36,7 @@ for f in ${@:-tests/cases/*.lisp}; do
     if [ -n "$STATIC" ]; then
       compile="bin/clysm build -o"
     elif [ -n "$SELFHOST" ]; then
-      compile="node host/run.mjs build/clysmc.wasm"
+      compile="node host/run.mjs build/clysmc.wasm${SHAKE:+ --shake}"
     else
       compile="sbcl --script tools/build.lisp${SHAKE:+ --shake}${THROWN:+ --thrown-exits}"
     fi

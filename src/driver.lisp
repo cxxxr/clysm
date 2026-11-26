@@ -1481,7 +1481,11 @@ A program compiled by either compiler has the same version (a form of its
 own, which takes a place among the toplevel forms)."
   (or (clysm-git-version runtime-dir)
       (ignore-errors
-       (with-open-file (in (merge-pathnames "../VERSION" runtime-dir))
+       ;; (RUNTIME-DIR of tools/build.lisp has the name and type of that
+       ;; file, which "../VERSION" would take)
+       (with-open-file (in (merge-pathnames (make-pathname :directory '(:relative :up) :name "VERSION")
+                                            (make-pathname :name nil :type nil :version nil
+                                                           :defaults runtime-dir)))
          (read-line in)))
       ;; (the runtime's variable, in SYSTEM: CLYSM-SYS is a package of the
       ;; compiler's own in clysmc.wasm)
@@ -1507,6 +1511,55 @@ own, which takes a place among the toplevel forms)."
      (let ((count (funcall git "rev-list" "--count" "HEAD")) (commit (funcall git "rev-parse" "--short" "HEAD")))
        (and (plusp (length count)) (plusp (length commit))
             (format nil "0.1.~A (~A)" count commit))))))
+
+;;; The REPL image: the runtime, the compiler and MAIN files compiled into
+;;; one module (COMPILE and the REPL then generate WebAssembly at run time).
+;;; Called by tools/build-repl.lisp on SBCL and by the self-hosted compiler
+;;; (clysmc.wasm --repl-image), so that either builds the same image.
+(defun build-repl-image (out mains root &key redefinable)
+  "Write the REPL image to OUT: the runtime, the compiler and the MAIN files
+(paths, or relative to ROOT, the directory of Clysm), compiled after the
+compiler.  With REDEFINABLE, calls of the functions of the MAIN files are not
+bound to their definitions there.  Returns the number of bytes written."
+  (let ((root (truename (make-pathname :name nil :type nil :version nil :defaults root)))) ; (named alike from either host)
+   (flet ((rpath (f) (namestring (merge-pathnames f root))))
+    (reset-compiler)
+    (setf *cgensym-counter* 0)
+    (setq *record-definitions* t)
+    (let ((*read-package* (find-target-package "SYSTEM")))
+      (dolist (f (with-open-file (s (rpath "tools/runtime-files.lisp")) (read s)))
+        (compile-source-file (rpath (format nil "runtime/~A.lisp" f))))
+      ;; argument lists and source locations of the functions and
+      ;; macros of COMMON-LISP (for SWANK)
+      (setq *record-definitions* nil)
+      (process-toplevel (recorded-definitions-form) (make-cenv))
+      (finish-runtime))
+    ;; the compiler's own CLYSM-SYS package is the image's SYSTEM package
+    (setf (gethash "CLYSM-SYS" *target-packages*) (find-package :clysm-sys))
+    (push "CLYSM-SYS" (gethash "SYSTEM" *target-nicknames*))
+    (dolist (f '("src/package" "src/wasm" "src/reader" "src/layout" "src/frontend" "src/types" "src/inline" "src/codegen"
+                 "src/prims" "src/typed" "src/driver" "src/hostenv" "src/live" "src/preinit" "src/static" "lib/live-image"))
+      (compile-source-file (rpath (concatenate 'string f ".lisp"))))
+    ;; the compiler's own functions get fewer copies of others: V8
+    ;; compiles them when they are first called, and a first DEFUN
+    ;; called 1.2 MB of them, a quarter of it copies
+    (setq *inline-big-caller-nodes* 400 *inline-caller-budget* 200
+          *inline-budget-source-p*
+          (lambda (file)
+            (and (stringp file)
+                 (or (search "src/" file) (search "lib/live-image" file)
+                     ;; (macros: run when code is compiled)
+                     (search "runtime/loop" file)))))
+    (let ((*redefinable-functions* redefinable))
+      (dolist (main mains)
+        (compile-source-file (if (probe-file main) main (rpath main)))))
+    ;; the modules compiled in the image import some runtime helpers
+    ;; from it (src/live.lisp)
+    (setf (gethash (intern "*LIVE-HELPER-IMPORTS*" "CLYSM-T/CLYSM") *initial-symbol-values*) (list t))
+    (let ((bytes (let ((*export-live-helpers* t)) (build-module))))
+      (with-open-file (o out :direction :output :element-type '(unsigned-byte 8) :if-exists :supersede)
+        (write-sequence bytes o))
+      (length bytes)))))
 
 (defun compile-program (files &key (output "out.wasm") runtime-dir ((:shake *shake*) *shake*)
                                    ((:preinit-through *preinit-through*) nil)

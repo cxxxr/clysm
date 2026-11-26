@@ -1837,7 +1837,8 @@ the system.)"
   '((get-setf-expansion . clysm-sys::%get-setf-expansion)
     (macroexpand-1 . clysm-sys::%macroexpand-1)
     (macroexpand . clysm-sys::%macroexpand)
-    (macro-function . clysm-sys::%host-macro-function*))
+    (macro-function . clysm-sys::%host-macro-function*)
+    (constantp . clysm-sys::%host-constantp))
   "CL functions taking an environment argument: host-evaluated macro bodies
 must call the compiler's versions, which understand compiler environments.")
 
@@ -2738,7 +2739,12 @@ NIL when there is nothing it could call."
                      (let ((s (spec m p))) (when (and (symbolp s) (not (eq s t))) (pushnew s r))))))
                (note-check (p key)
                  ;; (the class specializers of all the methods at P)
-                 (let ((assumed (remove-if-not (lambda (c) (member c (class-specs methods p))) (clysm-sys::%ct-key-cpl u key))))
+                 ;; (a fresh list: REMOVE-IF-NOT of SBCL gives the tail it
+                 ;; kept, of a literal that its COMPILE-FILE made one with
+                 ;; others, and the constant made of CHECKS shared it; Clysm's
+                 ;; copies, and the compiler in Wasm made another module)
+                 (let ((assumed (copy-list (remove-if-not (lambda (c) (member c (class-specs methods p)))
+                                                          (clysm-sys::%ct-key-cpl u key)))))
                    (pushnew (list p key assumed) checks :test #'equal)))
                (class-cell (p cname)
                  (let ((e (assoc (cons p cname) class-cells :test #'equal)))
