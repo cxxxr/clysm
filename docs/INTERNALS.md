@@ -3302,9 +3302,14 @@ hang detected by a watchdog) is recorded as `CRASH`, and `tests/ansi/run.sh`
 resumes with the next test. Per-category logs and `summary.txt` are written to
 `build/ansi/`.
 
-Categories run in parallel (`ANSI_JOBS`, default 8; `files` runs first because
-the `streams` tests use the directory it creates), starting from a pristine
-sandbox. The latest results are in `tests/ansi/RESULTS.txt`: 21931 of 21932
+Categories run in parallel (`ANSI_JOBS` processes, by default the number of
+processors; `files` runs first because the `streams` tests use the directory
+it creates), starting from a pristine sandbox. A category is not run in
+parts: the run is as long as the processors take for all the tests (the three
+longest categories, `printer`, `numbers` and `sequences`, take 7 to 9 seconds
+each alone and the run 13 on 16 cores), and parts placed by the time of their
+tests, each loading its category again, made it one second shorter.
+The latest results are in `tests/ansi/RESULTS.txt`: 21931 of 21932
 tests pass (99.99%), with no crashes. The five tests with the note
 `:loop-iteration-values-in-finally` (marked `:ansi-spec-problem`) are
 inactive, as on SBCL: like the MIT LOOP, an arithmetic `for` variable is
@@ -10271,7 +10276,21 @@ and dialogs), compiled ahead of time and in the REPL image.
 `tools/run-tests.sh` compiles every `tests/cases/*.lisp`, runs it, and compares
 standard output with SBCL running the same file. `INTERP=1` runs the files with
 the in-image evaluator instead, and `SELFHOST=1` compiles them with the
-Wasm-hosted compiler.
+Wasm-hosted compiler. The files run `TEST_JOBS` at a time (by default the
+number of processors). Compiled by the SBCL-hosted compiler (no mode, `SHAKE=1`,
+`THROWN=1`), they are compiled by one process, `tools/build-many.lisp`: it
+loads the compiler and compiles the runtime once, then forks a process per file
+from there (`*AFTER-RUNTIME-HOOK*` of `COMPILE-PROGRAM`), which compiles the
+file and writes the module as `tools/build.lisp` would. It is given
+`--definition-seconds 3` (`TEST_DEFINITION_SECONDS`): `tests/cases/deep-forms.lisp`
+has a definition that SBCL does not finish with, and waiting the 20 seconds of
+`*HOST-DEFINITION-SECONDS*` for it was the time of the whole run. The sections
+of `tests/lib/run.sh` (a library and what is checked of it) also run
+`TEST_JOBS` at a time, and print what they print in their order. `make test-all`
+(`tools/test-all.sh`) runs the suites that run one program after another
+(`test-link`, `test-fasl-images`, `test-lib`, `test-asdf`, `test-static`) and
+`make selfhost` at the same time as the modes of `tools/run-tests.sh`, which
+run one after another since they share `build/tests/`.
 
 An entry can reject an unsupported host before loading its Wasm module with
 `:checks`, a list of `(predicate message)` pairs. Predicates use the same
