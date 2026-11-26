@@ -14,24 +14,40 @@ STALL=${ANSI_STALL:-30}          # seconds without progress before a test is con
 # start from a pristine sandbox
 git -C third_party/ansi-test checkout -q -- sandbox 2>/dev/null
 git -C third_party/ansi-test clean -qfdx sandbox 2>/dev/null
-JOBS=${ANSI_JOBS:-8}             # categories run in parallel
+JOBS=${ANSI_JOBS:-$(nproc 2>/dev/null || echo 8)}   # processes run in parallel
+# A large category runs in parts of CHUNK tests, each in its own process
+# (which loads the category again), so that the run is not as long as its
+# largest category.  The numbers of tests below only place the parts: the
+# last part runs to the end.  The categories whose tests make and delete
+# files in the sandbox run in one process.
+CHUNK=${ANSI_CHUNK:-400}
+approx_total() {
+  case $1 in
+    sequences) echo 3287;; printer) echo 2446;; cons) echo 1882;; numbers) echo 1436;;
+    data-and-control-flow) echo 1428;; structures) echo 1394;; arrays) echo 1356;;
+    symbols) echo 1145;; objects) echo 862;; iteration) echo 838;; misc) echo 740;;
+    reader) echo 673;; *) echo 0;;
+  esac
+}
 mkdir -p build/ansi
+rm -f build/ansi/*.log build/ansi/*.sum
 : > build/ansi/summary.txt
-run_category() {
-  cat=$1
-  log="build/ansi/$cat.log"; : > "$log"
-  start=0
+# run_part CATEGORY START END LOG: the tests of CATEGORY from START up to END
+# (to the end when END is empty)
+run_part() {
+  cat=$1; start=$2; end=$3; log=$4
+  : > "$log"
   while :; do
     base=$(wc -c < "$log")
-    timeout "$TIMEOUT" node $NURSERY host/run.mjs "$IMAGE" tests/ansi/driver.lisp "$cat" "$start" >> "$log" 2>&1 &
+    timeout "$TIMEOUT" node $NURSERY host/run.mjs "$IMAGE" tests/ansi/driver.lisp "$cat" "$start" $end >> "$log" 2>&1 &
     pid=$!
     # watchdog: kill the run when the log stops growing (a hung test)
-    size=-1; idle=0
+    size=-1; since=$(date +%s)
     while kill -0 $pid 2>/dev/null; do
-      sleep 2
+      sleep 0.5
       new=$(wc -c < "$log")
-      if [ "$new" = "$size" ]; then idle=$((idle + 2)); else idle=0; size=$new; fi
-      if [ $idle -ge $STALL ] && tail -c +$((base + 1)) "$log" | grep -aq "^@@TOTAL"; then
+      if [ "$new" != "$size" ]; then size=$new; since=$(date +%s); fi
+      if [ $(( $(date +%s) - since )) -ge $STALL ] && tail -c +$((base + 1)) "$log" | grep -aq "^@@TOTAL"; then
         kill $pid 2>/dev/null; break
       fi
     done
@@ -43,7 +59,20 @@ run_category() {
     name=$(grep -a "^@@START $last " "$log" | tail -1 | cut -d' ' -f3-)
     echo "@@ $last CRASH $name" >> "$log"
     start=$((last + 1))
+    [ -n "$end" ] && [ "$start" -ge "$end" ] && { echo "@@DONE" >> "$log"; break; }
   done
+}
+# finish_category CATEGORY: its log (build/ansi/CATEGORY.log, the parts'
+# logs one after another: @@DONE at the end when every part ran to its end)
+# and its line of the summary
+finish_category() {
+  cat=$1; log="build/ansi/$cat.log"
+  parts=""; i=0
+  while [ -f "build/ansi/$cat.part$i.log" ]; do parts="$parts build/ansi/$cat.part$i.log"; i=$((i + 1)); done
+  done=1
+  for p in $parts; do grep -aq "^@@DONE" "$p" || done=""; done
+  { for p in $parts; do grep -av "^@@DONE" "$p"; done; [ -n "$done" ] && echo "@@DONE"; } > "$log"
+  rm -f $parts
   total=$(grep -a "^@@TOTAL" "$log" | head -1 | awk '{print $2}')
   pass=$(grep -ac "^@@ [0-9]* PASS" "$log")
   fail=$(grep -ac "^@@ [0-9]* FAIL" "$log")
@@ -53,17 +82,29 @@ run_category() {
 }
 # the streams tests use sandbox/scratch/, which the files tests create (the
 # suite normally runs every category in one process, files before streams)
-case " $CATS " in *" files "*) rm -f build/ansi/files.sum; run_category files;; esac
-running=0
-for cat in $CATS; do
-  [ -f "third_party/ansi-test/$cat/load.lsp" ] || { echo "no category $cat"; continue; }
+case " $CATS " in *" files "*) run_part files 0 "" build/ansi/files.part0.log; finish_category files;; esac
+# the parts, the largest categories' first
+parts=$(for cat in $CATS; do
+  [ -f "third_party/ansi-test/$cat/load.lsp" ] || { echo "no category $cat" >&2; continue; }
   [ "$cat" = files ] && continue
-  rm -f "build/ansi/$cat.sum"
-  run_category "$cat" &
+  n=$(approx_total "$cat"); k=$(( (n + CHUNK - 1) / CHUNK )); [ $k -lt 1 ] && k=1
+  case $cat in streams|pathnames|system-construction) k=1;; esac
+  for i in $(seq 0 $((k - 1))); do
+    s=$((i * CHUNK)); e=$(( (i + 1) * CHUNK )); [ $i = $((k - 1)) ] && e=""
+    echo "$n $cat $i $s $e"
+  done
+done | sort -k1,1nr -k3,3n | cut -d' ' -f2-)
+running=0
+while read -r cat i s e; do
+  [ -n "$cat" ] || continue
+  run_part "$cat" "$s" "$e" "build/ansi/$cat.part$i.log" &
   running=$((running + 1))
   if [ $running -ge $JOBS ]; then wait -n 2>/dev/null || wait; running=$((running - 1)); fi
-done
+done <<< "$parts"
 wait
+for cat in $CATS; do
+  [ "$cat" = files ] || { [ -f "third_party/ansi-test/$cat/load.lsp" ] && finish_category "$cat"; }
+done
 for cat in $CATS; do [ -f "build/ansi/$cat.sum" ] && cat "build/ansi/$cat.sum"; done | tee build/ansi/summary.txt
 awk '{t+=$3; p+=$5; f+=$7; c+=$9} END {printf "%-24s total %5d  pass %5d  fail %5d  crash %4d  (%.1f%%)\n", "ALL", t, p, f, c, (t ? 100*p/t : 0)}' build/ansi/summary.txt | tee -a build/ansi/summary.txt
 # the tests create and delete files in the suite's sandbox: restore the submodule
