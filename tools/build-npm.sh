@@ -26,7 +26,7 @@ for d in contrib/*; do
   cp -r "$d" "$out/contrib/"
 done
 cp third_party/asdf/asdf.lisp "$out/third_party/asdf/"
-cp tools/runtime-files.lisp tools/gen-library.mjs tools/static-build.lisp "$out/tools/"
+cp tools/runtime-files.lisp tools/system-files.lisp tools/gen-library.mjs tools/static-build.lisp "$out/tools/"
 cp README.md "$out/"
 version="0.1.$(git rev-list --count HEAD)"
 commit=$(git rev-parse --short HEAD)

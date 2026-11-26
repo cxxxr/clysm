@@ -9840,9 +9840,13 @@ direct and small functions are copied into their callers); files compiled
 one by one (`compile-file`, ASDF in the image) are 1.8 to 2.9 times slower.
 `--system NAME` (`bin/clysm.mjs test`, and `tools/system-files.lisp`, which
 prints the files) compiles an ASDF system with the systems it depends on as
-one program: ASDF on SBCL finds the files in their load order, reading the
-system definitions with the feature `:clysm` (and without `:sbcl`), and
-looks in `contrib/` before the source registry and Quicklisp. Compiling
+one program: ASDF finds the files in their load order, reading the system
+definitions with the feature `:clysm` (and without `:sbcl`), and looks in
+`contrib/` before the source registry and Quicklisp. It runs on SBCL where
+SBCL hosts the compiler, otherwise (the npm package) in the REPL image with
+its own ASDF (`bin/clysm script tools/system-files.lisp NAME [FILE.asd]`,
+about 2.5 s against 0.3 s), which finds the same files: so `--system` needs
+no SBCL either. Compiling
 takes about 2 seconds for the runtime plus the program's own code.
 
 ### Applications in one module (`clysm build`)

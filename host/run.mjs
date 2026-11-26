@@ -148,12 +148,25 @@ if (traceFile) {
 // the Clysm installation directory (REQUIRE finds bundled modules there)
 globalThis.__clysm_root = fileURLToPath(new URL('..', import.meta.url));
 
+// all of TEXT to FD: a pipe the parent reads (spawn's stdio 'pipe') is
+// non-blocking, and a write to it when it is full fails with EAGAIN or
+// writes a part
+const sleepCell = new Int32Array(new SharedArrayBuffer(4));
+function writeAll(fd, text) {
+  const buf = Buffer.from(text, 'utf8');
+  let done = 0;
+  while (done < buf.length) {
+    try { done += fs.writeSync(fd, buf, done, buf.length - done); }
+    catch (e) { if (e.code !== 'EAGAIN') throw e; Atomics.wait(sleepCell, 0, 0, 1); }
+  }
+}
+
 function nodePlatform(state, args) {
   const out = { 1: [], 2: [] };
   let flushScheduled = false;
   const flush = () => {
     for (const fd of [1, 2]) {
-      if (out[fd].length) { fs.writeSync(fd, out[fd].join('')); out[fd] = []; }
+      if (out[fd].length) { writeAll(fd, out[fd].join('')); out[fd] = []; }
     }
   };
   // output written by Lisp code that JavaScript calls later (a timer, a
@@ -163,7 +176,7 @@ function nodePlatform(state, args) {
   };
   state.flush = flush;
   state.flushPending = () => flushScheduled;
-  state.writeText = (fd, text) => { flush(); fs.writeSync(fd, text); };
+  state.writeText = (fd, text) => { flush(); writeAll(fd, text); };
   const stdinBuf = Buffer.alloc(1);
   // octets read ahead by stdinWait (a thread that waits for input without
   // blocking the others, runtime/thread.lisp)
