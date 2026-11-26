@@ -1631,6 +1631,12 @@ main function and whether the form is a DEFGENERIC.")
         (*live-key-layout-hook* (lambda (sym) (declare (ignore sym)) nil)))
     (compile-program-2 files output runtime-dir runtime-prefix)))
 
+(defvar *after-runtime-hook* nil
+  "When true, a function that COMPILE-PROGRAM calls with its FILES and
+OUTPUT once the runtime is compiled; the program is then compiled with the
+files and output it returns (two values).  tools/build-many.lisp forks
+there, to compile many programs on one compiled runtime.")
+
 (defun compile-program-2 (files output runtime-dir runtime-prefix)
   (let ((*read-package* (find-target-package "SYSTEM")))
     (dolist (f (runtime-source-files runtime-dir)) (compile-source-file f))
@@ -1644,6 +1650,8 @@ main function and whether the form is a DEFGENERIC.")
     (setf *runtime-top-count* (length *toplevel-lams*)
           *preinit-root* (merge-pathnames "../" (make-pathname :name nil :type nil :version nil
                                                                :defaults runtime-dir))))
+  (when *after-runtime-hook*
+    (multiple-value-setq (files output) (funcall *after-runtime-hook* files output)))
   (let ((*host-load-defuns* t)
         (clysm-sys::%program-key-layout-hook
           (lambda (name layout defgeneric-p)

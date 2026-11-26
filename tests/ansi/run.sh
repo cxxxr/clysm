@@ -14,7 +14,7 @@ STALL=${ANSI_STALL:-30}          # seconds without progress before a test is con
 # start from a pristine sandbox
 git -C third_party/ansi-test checkout -q -- sandbox 2>/dev/null
 git -C third_party/ansi-test clean -qfdx sandbox 2>/dev/null
-JOBS=${ANSI_JOBS:-8}             # categories run in parallel
+JOBS=${ANSI_JOBS:-$(nproc 2>/dev/null || echo 8)}   # categories run in parallel
 mkdir -p build/ansi
 : > build/ansi/summary.txt
 run_category() {
@@ -28,7 +28,7 @@ run_category() {
     # watchdog: kill the run when the log stops growing (a hung test)
     size=-1; idle=0
     while kill -0 $pid 2>/dev/null; do
-      sleep 2
+      sleep 0.5
       new=$(wc -c < "$log")
       if [ "$new" = "$size" ]; then idle=$((idle + 2)); else idle=0; size=$new; fi
       if [ $idle -ge $STALL ] && tail -c +$((base + 1)) "$log" | grep -aq "^@@TOTAL"; then

@@ -85,12 +85,12 @@ fixpoint: selfhost
 	node host/run.mjs build/clysmc2.wasm build/clysmc3.wasm $(SRCS)
 	cmp build/clysmc2.wasm build/clysmc3.wasm && echo "fixed point reached"
 
-test-all: test test-link test-fasl-images test-lib test-asdf test-static selfhost
-	STATIC=1 tools/run-tests.sh
-	INTERP=1 tools/run-tests.sh
-	NATIVE=1 tools/run-tests.sh
-	SELFHOST=1 tools/run-tests.sh
-	tests/lib/selfhost-same.sh
+# test, test-link, test-fasl-images, test-lib, test-asdf, test-static, selfhost
+# and the modes STATIC, INTERP, NATIVE and SELFHOST of tools/run-tests.sh,
+# some of them at the same time, then tests/lib/selfhost-same.sh
+# (tools/test-all.sh)
+test-all:
+	tools/test-all.sh
 
 web:
 	tools/build-web.sh
