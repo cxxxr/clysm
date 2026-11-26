@@ -9357,7 +9357,11 @@ main thread, whose heap exists before `host/run.mjs` runs
 themselves, do the same). `CLYSM_NURSERY_MB` names another size (64: the
 engine's). What it costs: a program much of whose data survives is given
 more memory (the self-hosted compiler compiling `bench/suite.lisp`: 1.2 GB
-resident instead of 0.8, in the same time, 4.0–4.2 s), and its longest
+resident instead of 0.8, in the same time, 4.0–4.2 s; so `bin/clysm.mjs` and
+`tools/build-selfhost.sh --no-sbcl` run the compiler with 16 MB unless
+`CLYSM_NURSERY_MB` is set: Code Map's 188 files in 1.6 GB instead of 2.1 and
+28 s instead of 33, `tests/cases/clos.lisp` in 0.74 GB instead of 1.17 and
+5.0 s instead of 4.6), and its longest
 scavenge is longer (that compilation: 197 ms instead of 59; building the
 list: 110 instead of 57), since a scavenge copies what survived of a young
 generation four times the size. Data that lives long is still copied

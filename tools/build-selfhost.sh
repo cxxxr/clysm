@@ -18,6 +18,10 @@ fi
 seed="${CLYSMC:-build/clysmc.wasm}"
 [ -f "$seed" ] || { echo "build-selfhost: no compiler to start from ($seed): set CLYSMC to a clysmc.wasm" >&2; exit 1; }
 node="${NODE:-node}"
+# (a young generation of 16 MB a semi-space: the compiler keeps what it makes,
+# bin/clysm.mjs)
+CLYSM_NURSERY_MB="${CLYSM_NURSERY_MB:-16}"
+export CLYSM_NURSERY_MB
 mkdir -p build
 "$node" host/run.mjs "$seed" build/clysmc.wasm.new $files --runtime runtime
 mv -f build/clysmc.wasm.new build/clysmc.wasm

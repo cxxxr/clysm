@@ -75,7 +75,7 @@ function compileQuiet(files, out, shake) {
     ? ['--dynamic-space-size', sbclHeap, '--script', path.join(root, 'tools', 'build.lisp'), ...(shake ? ['--shake'] : []), out, ...files]
     : [runHost, compiler, ...(shake ? ['--shake'] : []), out, ...files, '--runtime', path.join(root, 'runtime')];
   return new Promise((resolve) => {
-    const child = spawn(sbcl ? 'sbcl' : node, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(sbcl ? 'sbcl' : node, args, { stdio: ['ignore', 'pipe', 'pipe'], env: compilerEnv() });
     let log = '';
     child.stdout.on('data', (b) => { log += b; });
     child.stderr.on('data', (b) => { log += b; });
@@ -155,6 +155,13 @@ async function test(args) {
   console.log(`watching ${watched.size} directories`);
 }
 
+// The compiler keeps much of what it makes until its end (the program's
+// forms, their code): a young generation of 256 MB a semi-space, which pays
+// for programs whose data dies young, there only costs memory (2.1 GB for
+// the 188 files of a large library, 1.6 GB with 16 MB, and a sixth faster).
+// CLYSM_NURSERY_MB still decides it when set.
+const compilerEnv = () => ({ ...process.env, CLYSM_NURSERY_MB: process.env.CLYSM_NURSERY_MB || '16' });
+
 function compile(files, out, shake, options = []) {
   if (!compiler) {
     console.error('clysm: the compiler (clysmc.wasm) is missing; build it with tools/build-selfhost.sh');
@@ -162,7 +169,7 @@ function compile(files, out, shake, options = []) {
   }
   const args = [runHost, compiler, ...(shake ? ['--shake'] : []), ...options, path.resolve(out),
                 ...files.map((f) => path.resolve(f)), '--runtime', path.join(root, 'runtime')];
-  const status = run(args);
+  const status = run(args, { env: compilerEnv() });
   if (status !== 0) process.exit(status);
 }
 
