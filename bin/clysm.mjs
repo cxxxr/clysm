@@ -51,10 +51,15 @@ function run(args, options = {}) {
 const sbcl = fs.existsSync(path.join(root, 'tools', 'build.lisp'))
   && spawnSync('sbcl', ['--version'], { stdio: 'ignore' }).status === 0;
 
+// the files of an ASDF system, as ASDF finds them (tools/system-files.lisp):
+// on SBCL where it hosts the compiler, otherwise in the REPL image, whose
+// own ASDF reads the system definitions alike
 function systemFiles(name, asd) {
-  if (!sbcl) { console.error('clysm: --system needs SBCL (it runs ASDF to find the files)'); process.exit(1); }
-  const r = spawnSync('sbcl', ['--script', path.join(root, 'tools', 'system-files.lisp'), name,
-                               ...(asd ? [path.resolve(asd)] : [])], { encoding: 'utf8' });
+  const script = [path.join(root, 'tools', 'system-files.lisp'), name, ...(asd ? [path.resolve(asd)] : [])];
+  if (!sbcl && !replImage) { console.error('clysm: --system needs the REPL image (clysm-native.wasm) or SBCL'); process.exit(1); }
+  const r = sbcl
+    ? spawnSync('sbcl', ['--script', ...script], { encoding: 'utf8' })
+    : spawnSync(node, [nursery, runHost, replImage, ...script], { encoding: 'utf8', env: replEnv() });
   if (r.status !== 0) { process.stderr.write(r.stderr || ''); process.exit(1); }
   return r.stdout.split('\n').filter((l) => l);
 }
