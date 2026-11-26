@@ -4,10 +4,6 @@
 
 (in-package :clysm)
 
-(defun selfhost-runtime-files (dir)
-  (with-open-file (s (concatenate 'string dir "/../tools/runtime-files.lisp"))
-    (mapcar (lambda (f) (concatenate 'string dir "/" f ".lisp")) (read s))))
-
 (defun selfhost-main ()
   (let* ((args (sys::%command-line-arguments))
          (runtime-dir "runtime")
@@ -22,35 +18,17 @@
     (when (< (length files) 1)
       (format *error-output* "usage: clysmc [--shake] OUT.wasm FILE... [--runtime DIR]~%")
       (sys::%exit 2))
-    (let ((out (first files)) (sources (rest files))
-          (*shake* shake)
-          ;; (a module shaken here has no heap of src/preinit.lisp: the
-          ;; cells of the literal names of JavaScript are constants,
-          ;; JS-NAME-CELL-GLOBAL)
-          (*name-cells-at-start* (not shake))
-          (*source-root* (ignore-errors (truename (concatenate 'string runtime-dir "/../")))))
-      ;; macro expanders run by the image's evaluator receive the compiler's
-      ;; environment objects (e.g. GET-SETF-EXPANSION inside a SETF expander)
-      (setq sys::*foreign-env-macroexpand-hook* #'cmacroexpand-1)
-      (setq sys::*foreign-env-macro-function-hook* #'macro-function-in)
-      (reset-compiler)
-      (let ((*read-package* (find-target-package "SYSTEM")))
-        (dolist (f (selfhost-runtime-files runtime-dir)) (compile-source-file f))
-        ;; the version of the package (VERSION, written by tools/build-npm.sh)
-        (let ((version (ignore-errors
-                        (with-open-file (in (concatenate 'string runtime-dir "/../VERSION"))
-                          (read-line in)))))
-          (when version
-            (process-toplevel `(setq clysm-sys::*clysm-version* ,version) (make-cenv))))
-        (finish-runtime))
-      (let ((*host-load-defuns* t)
-            ;; (the program's generic functions, as COMPILE-PROGRAM-1)
-            (clysm-sys::*gf-unit* (clysm-sys::%make-gf-unit)))
-        (dolist (f sources) (compile-source-file f))
-        (gf-unit-flush (make-cenv)))
-      (let ((bytes (build-module)))
-        (with-open-file (o out :direction :output :element-type '(unsigned-byte 8) :if-exists :supersede)
-          (write-sequence bytes o))
-        (format *error-output* "~&; wrote ~A (~D bytes)~%" out (length bytes))))))
+    ;; macro expanders run by the image's evaluator receive the compiler's
+    ;; environment objects (e.g. GET-SETF-EXPANSION inside a SETF expander)
+    (setq sys::*foreign-env-macroexpand-hook* #'cmacroexpand-1)
+    (setq sys::*foreign-env-macro-function-hook* #'macro-function-in)
+    ;; the driver of the SBCL-hosted compiler (tools/build.lisp), so that
+    ;; both compile a program alike.  There is no heap of src/preinit.lisp
+    ;; here (*PREINIT-FUNCTION* is NIL): a shaken module runs the runtime's
+    ;; toplevel forms when it starts.
+    (let* ((out (first files))
+           (n (compile-program (rest files) :output out :shake shake
+                               :runtime-dir (concatenate 'string runtime-dir "/"))))
+      (format *error-output* "~&; wrote ~A (~D bytes)~%" out n))))
 
 (selfhost-main)

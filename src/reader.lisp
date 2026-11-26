@@ -340,8 +340,40 @@ and macro expanders can use target package names."
 ;;; Quasiquote expansion (Bawden's algorithm + simplification)
 ;;; ------------------------------------------------------------
 
+(defun qq-literal-p (x depth)
+  "No comma in X (its conses and simple vectors) is evaluated when X is
+expanded at DEPTH: those of a backquote inside it are of its depth, one
+more (QQ-EXPAND).  The expansion of X is then X itself.  NIL also for a
+structure too large to be walked (more than 100000 conses and elements: a
+circular one)."
+  (let ((budget 100000))
+    (labels ((walk (x depth)
+               (loop
+                 (when (minusp (decf budget)) (return-from qq-literal-p nil))
+                 (cond ((consp x)
+                        (cond ((eq (car x) +qq+) (incf depth))
+                              ((or (eq (car x) +uq+) (eq (car x) +uqs+))
+                               (when (zerop depth) (return-from qq-literal-p nil))
+                               (decf depth))
+                              (t (walk (car x) depth)))
+                        (setq x (cdr x)))
+                       ((simple-vector-p x)
+                        ;; (a vector is expanded as the list of its elements)
+                        (walk (coerce x 'list) depth)
+                        (return))
+                       (t (return))))))
+      (walk x depth)
+      t)))
+
 (defun qq-expand (x depth)
-  (cond ((consp x)
+  (cond ((and (consp x) (qq-literal-p x depth))
+         ;; the object read, not a copy made by QQ-APPEND: a macro's
+         ;; expander that the self-hosted compiler interprets expands its
+         ;; backquotes each time it runs, and each copy was a literal of its
+         ;; own (they are not shared in the runtime's code, CONST-GLOBAL-1)
+         ;; where the expander compiled on SBCL returned one
+         (list 'quote x))
+        ((consp x)
          (cond ((eq (car x) +qq+)
                 (list 'cons (list 'quote +qq+) (qq-expand (cdr x) (1+ depth))))
                ((or (eq (car x) +uq+) (eq (car x) +uqs+))
@@ -357,7 +389,10 @@ and macro expanders can use target package names."
         (t x)))
 
 (defun qq-expand-list (x depth)
-  (cond ((consp x)
+  (cond ((and (consp x) (qq-literal-p x depth))
+         ;; (an element as QQ-EXPAND takes X: the object read)
+         (list 'list (list 'quote x)))
+        ((consp x)
          (cond ((eq (car x) +qq+)
                 (list 'list (list 'cons (list 'quote +qq+) (qq-expand (cdr x) (1+ depth)))))
                ((or (eq (car x) +uq+) (eq (car x) +uqs+))

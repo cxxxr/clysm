@@ -16,7 +16,7 @@
 (defmacro defprim (name args kind &body body)
   "Define a primitive.  BODY receives the arg instruction lists bound to ARGS
 and returns instructions.  KIND is :value (eqref) or :test (i32)."
-  (let ((argv (gensym)))
+  (let ((argv (cgensym)))
     `(let ((p (make-prim :name ',name :nargs ,(if (eq args :any) :any (length args)) :kind ,kind
                          :fn (lambda (,argv)
                                (declare (ignorable ,argv))
@@ -421,7 +421,7 @@ may be doubles (operands of unknown type, with a double among the operands
 of each operation), the tree is tried in f64 too, before the generic code.
 With TARGET, (B . F) the locals of an unboxed double variable: nothing is
 left, the value is stored there."
-  (let ((done (gensym "FUSED")) (fail (gensym "SLOW")) (fail2 (gensym "SLOWF")) (r (new-local :i64)))
+  (let ((done (cgensym "FUSED")) (fail (cgensym "SLOW")) (fail2 (cgensym "SLOWF")) (r (new-local :i64)))
     (multiple-value-bind (leaves i64-code generic recs) (fused-parts node)
       ;; SMALL: a bounded sum of fixnums in i32; else the i64 code, whose
       ;; root may be left unsigned (a tree under a mask of 64 bits) when the
@@ -473,7 +473,7 @@ left, the value is stored there."
 (defun fused-i64-rep-code (node)
   (when (and (not *no-fuse*) (fusable-op-node-p node) (ty-int64-p (node-ty node))
              (not (eq (fused-plan node nil) :no)))
-    (let ((done (gensym "FUSED")) (fail (gensym "SLOW")))
+    (let ((done (cgensym "FUSED")) (fail (cgensym "SLOW")))
       (multiple-value-bind (leaves i64-code generic) (fused-parts node)
         `(,@leaves
           (:block ,done :i64
@@ -575,7 +575,7 @@ operation and a double among its operands."
 the locals of an unboxed double variable: nothing is left, the value is
 stored there (F, with B null, when the fast path gave it)."
   (let ((leaves nil) (count 0)
-        (done (new-local :i32)) (bail (gensym "SPECBAIL")) (out (gensym "SPEC")))
+        (done (new-local :i32)) (bail (cgensym "SPECBAIL")) (out (cgensym "SPEC")))
     (labels ((op-p (n) (and (spec-op-node-p n) (not (ty-double-p (node-ty n))) (spec-op-p n)))
              (fast (n)
                (if (op-p n)
@@ -751,11 +751,11 @@ of them that push a value known to be a fixnum as its i32 followed by
   ;; each type test after it, and the tests of the final types are
   ;; BR_ON_CAST, a compare of the map and a branch: REF.TEST then BR_IF left
   ;; the result of the compare in a register and tested that)
-  (let ((o (new-local)) (v (new-local :i32)) (done (gensym "KIND")))
+  (let ((o (new-local)) (v (new-local :i32)) (done (cgensym "KIND")))
     (let ((code `((:local.get ,o) (:call :type-code) (:br ,done))))
       (loop for (kind . types) in (reverse '((2 :cons) (3) (4 :symbol) (5 :instance) (8 :double) (9 :closure)
                                              (10 :ibox :bignum) (11 :ratio) (12 :single)))
-            do (let ((l (gensym "K")))
+            do (let ((l (cgensym "K")))
                  (setf code
                        (if types
                            `((:block ,l :eqref
@@ -893,7 +893,7 @@ leaving them in the i32 locals X and Y."
 the range that a fixnum plus K reaches (a character, or a sum beyond the
 fixnums, is outside it; an i31 below the fixnums is never made), so that
 the operand's own range need not be tested.  HELPER is called with A and B."
-  (let ((ta (new-local)) (x (new-local :i32)) (slow (gensym "SLOW")) (done (gensym "FX")))
+  (let ((ta (new-local)) (x (new-local :i32)) (slow (cgensym "SLOW")) (done (cgensym "FX")))
     ;; the sum R of a fixnum and K is a fixnum when R is in [LO, HI)
     (multiple-value-bind (lo hi)
         (if (>= k 0)
@@ -941,7 +941,7 @@ fixnum, the code pushing it as an i32 and the code pushing it as an object
       (return-from inline-fixnum-op
         `(,@b (:local.set ,tb)
           ,@(inline-fixnum-add-constant `((:local.get ,tb)) (constant-fixnum-payload a) helper a)))))
-  (let ((slow (gensym "SLOW")) (done (gensym "FX")) (r (new-local :i32))
+  (let ((slow (cgensym "SLOW")) (done (cgensym "FX")) (r (new-local :i32))
         ;; (LOGAND, LOGIOR, LOGXOR of two fixnums: a fixnum)
         (result-check (member op '(:i32.add :i32.sub))))
     (if (or (known-fixnum-code-p a) (known-fixnum-code-p b) (constant-fixnum-payload a) (constant-fixnum-payload b))
@@ -972,7 +972,7 @@ fixnum, the code pushing it as an i32 and the code pushing it as an object
 (defun inline-fixnum-mul (a b)
   "Inline fixnum product (in i64); falls back to the :mul helper."
   (let ((ta (new-local)) (tb (new-local)) (x (new-local :i32)) (y (new-local :i32)) (r (new-local :i64))
-        (slow (gensym "SLOW")) (done (gensym "FX")))
+        (slow (cgensym "SLOW")) (done (cgensym "FX")))
     `(,@a (:local.set ,ta) ,@b (:local.set ,tb)
       (:block ,done :eqref
         (:block ,slow nil
@@ -984,7 +984,7 @@ fixnum, the code pushing it as an i32 and the code pushing it as an object
 
 (defun inline-fixnum-cmp (a b op helper-code &optional swap)
   "Inline comparison of two fixnums; falls back to HELPER-CODE."
-  (let ((slow (gensym "SLOW")) (done (gensym "FX")))
+  (let ((slow (cgensym "SLOW")) (done (cgensym "FX")))
     (if (or (known-fixnum-code-p a) (known-fixnum-code-p b) (constant-fixnum-payload a) (constant-fixnum-payload b))
         ;; a constant operand, or one known to be a fixnum, needs no test
         (multiple-value-bind (sa ca xa ba) (fixnum-operand a slow)
@@ -1077,11 +1077,11 @@ helper signals the type error)."
 (defprim symbol-plist (s) :value `(,@s (:call :to-symbol) (:struct.get :symbol ,+sym-plist+)))
 (defprim clysm-sys::%symbol-function (s) :value
   ;; NIL when not fbound
-  (let ((l (gensym)))
+  (let ((l (cgensym)))
     `((:block ,l :eqref ,@s (:call :to-symbol) (:struct.get :symbol ,+sym-function+)
         (:br_on_non_null ,l) ,@(nil-code)))))
 (defprim clysm-sys::%symbol-package (s) :value
-  (let ((l (gensym)))
+  (let ((l (cgensym)))
     `((:block ,l :eqref ,@s (:call :to-symbol) (:struct.get :symbol ,+sym-package+)
         (:br_on_non_null ,l) ,@(nil-code)))))
 (defprim clysm-sys::%set-symbol-package (s p) :value
@@ -1098,7 +1098,7 @@ helper signals the type error)."
   (let ((tmp (new-local)))
     `(,@s (:call :to-symbol) ,@v (:local.tee ,tmp) (:struct.set :symbol ,+sym-plist+) (:local.get ,tmp))))
 (defprim clysm-sys::%set-symbol-function (s f) :value
-  (let ((tmp (new-local)) (l (gensym)))
+  (let ((tmp (new-local)) (l (cgensym)))
     `(,@s (:call :to-symbol) ,@f (:local.tee ,tmp)
       ,@(nil-code) :ref.eq
       (:if nil (:ref :null :closure) ((:ref.null :closure)) ((:local.get ,tmp) (:ref.cast :closure)))
@@ -1284,7 +1284,7 @@ bounds of the array either way."
         (let ((code (new-local '(:ref :null :code))) (name (new-local)) (tmp (new-local))
               (o (new-local `(:ref :null ,type)))
               (fvs (loop repeat n collect (new-local)))
-              (done (gensym "REUSED")) (make (gensym "MAKE")))
+              (done (cgensym "REUSED")) (make (cgensym "MAKE")))
           `(,@(butlast new)
             ,@(loop for l in (reverse fvs) collect `(:local.set ,l))
             (:local.set ,name) (:local.set ,code)
@@ -1454,7 +1454,7 @@ of line, for other classes) C is in its precedence list."
 of CLASS, a structure of N field slots: its own instances are $si<N> (an exact
 type test), those of structures including it of a subtype."
   (let ((o (new-local)) (c (new-local)) (val (new-local)) (s (new-local `(:ref :null ,(sinst-type n))))
-        (l (new-local)) (slow (gensym "SLOW")) (hit (gensym "HIT")) (done (gensym "SREF")) (ty (sinst-type n)))
+        (l (new-local)) (slow (cgensym "SLOW")) (hit (cgensym "HIT")) (done (cgensym "SREF")) (ty (sinst-type n)))
     `(,@x (:local.set ,o) ,@class (:local.set ,c) ,@(when vp `(,@v (:local.set ,val)))
       (:block ,done :eqref
         (:block ,slow nil
@@ -1591,8 +1591,8 @@ with DEFCLASS whose superclasses include a structure class)."
 (defun sinst-dispatch-code (k-local arm default)
   "Helper-body code: a br_table on the i32 local K-LOCAL (0 .. +STRUCT-INLINE-MAX+ - 1)
 to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
-  (let* ((labels (loop for j below +struct-inline-max+ collect (gensym "SI")))
-         (dflt (gensym "SIDEFAULT"))
+  (let* ((labels (loop for j below +struct-inline-max+ collect (cgensym "SI")))
+         (dflt (cgensym "SIDEFAULT"))
          (code `((:local.get ,k-local) (:br_table ,@labels ,dflt))))
     (loop for j from 0 for l in labels
           do (setf code `((:block ,l nil ,@code) ,@(funcall arm j))))
@@ -1671,7 +1671,7 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
 (defprim clysm-sys::%swap-bindings (stack top up) :value
   (let ((st (new-local '(:ref :null :vector))) (i (new-local :i32)) (n (new-local :i32))
         (step (new-local :i32)) (sym (new-local '(:ref :null :symbol))) (tmp (new-local :eqref))
-        (done (gensym "DONE")) (again (gensym "AGAIN")))
+        (done (cgensym "DONE")) (again (cgensym "AGAIN")))
     `(,@stack (:ref.cast :vector) (:local.set ,st)
       ,@(idx-code top) (:local.set ,n)
       ,@up ,@(nil-code) :ref.eq
@@ -1742,7 +1742,7 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
             (when (and (listp ll) (every #'symbolp ll)
                        (notany (lambda (x) (member x lambda-list-keywords)) ll))
               (multiple-value-bind (decls forms) (parse-body (cddr lam))
-                (let ((l (gensym "ARGS")))
+                (let ((l (cgensym "ARGS")))
                   (return-from apply-native
                     (convert `(let ((,l ,(second args)))
                                 (clysm-sys::%check-arg-list ,l ,(length ll))
@@ -1902,7 +1902,7 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
                            tn)
                          '((clo (:ref :null :closure)))
                          (lambda ()
-                           (let ((l (gensym)))
+                           (let ((l (cgensym)))
                              `((:block ,l (:ref :closure)
                                  (:local.get ,k) (:struct.get :symbol ,+sym-function+) (:br_on_non_null ,l)
                                  (:local.get ,k) (:call :undefined-function))
@@ -1922,7 +1922,7 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
                            tn)
                          '((clo (:ref :null :closure)))
                          (lambda ()
-                           (let ((l (gensym)) (ok (gensym)))
+                           (let ((l (cgensym)) (ok (cgensym)))
                              `((:block ,l (:ref :closure)
                                  (:local.get ,k) (:struct.get :symbol ,+sym-function+) (:br_on_non_null ,l)
                                  (:local.get ,k) (:call :undefined-function))
@@ -2734,7 +2734,7 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
   "Decode parameter P, an integer within 128 bits, into its sign (the i32
 local SGN) and magnitude (the i64 locals LO and HI); anything else branches
 to FAIL.  M is a local for limbs."
-  (let ((done (gensym "WDEC")))
+  (let ((done (cgensym "WDEC")))
     `((:block ,done nil
         (:i64.const 0) (:local.set ,hi)
         (:local.get ,p) (:ref.test :i31)
@@ -4549,17 +4549,17 @@ not a string (left to EQUAL)."
         (:local.get i) (:local.get 2) (:array.set :vector) (:local.get 2) :return))
   '(:local.get v) '(:local.get 1) '(:local.get 2) '(:local.get hash) '(:return_call :ht-insert))
 (defprim clysm-sys::%ht-get-equal (h key slow) :value
-  (let ((done (gensym "HTGETS")))
+  (let ((done (cgensym "HTGETS")))
     `((:block ,done :eqref ,@h ,@key (:call :ht-get-equal) (:br_on_non_null ,done) ,@slow))))
 (defprim clysm-sys::%ht-put-equal (h key value slow) :value
-  (let ((done (gensym "HTPUTS")))
+  (let ((done (cgensym "HTPUTS")))
     `((:block ,done :eqref ,@h ,@key ,@value (:call :ht-put-equal) (:br_on_non_null ,done) ,@slow))))
 ;;; The index of the first entry at START or after it in the key vector KEYS
 ;;; of a hash table, filled up to FILL (DEL: +DELETED+), or -1: a loop of its
 ;;; own (MAPHASH, LOOP's HASH-KEYS, WITH-HASH-TABLE-ITERATOR).
 (defprim clysm-sys::%ht-scan-prim (keys fill del start) :value
   (let ((kv (new-local '(:ref :null :vector))) (n (new-local :i32)) (d (new-local)) (j (new-local :i32))
-        (done (gensym "SCAN")) (lp (gensym "SCANL")))
+        (done (cgensym "SCAN")) (lp (cgensym "SCANL")))
     `(,@keys (:ref.cast! :vector) (:local.set ,kv)
       ,@(idx-code fill) (:local.set ,n)
       ,@del (:local.set ,d)
@@ -4574,21 +4574,21 @@ not a string (left to EQUAL)."
         :unreachable)
       :ref.i31)))
 (defprim clysm-sys::%ht-get-id (h key slow) :value
-  (let ((done (gensym "HTGETI")))
+  (let ((done (cgensym "HTGETI")))
     `((:block ,done :eqref ,@h ,@key (:call :ht-get-id) (:br_on_non_null ,done) ,@slow))))
 (defprim clysm-sys::%ht-put-id (h key value slow) :value
-  (let ((done (gensym "HTPUTI")))
+  (let ((done (cgensym "HTPUTI")))
     `((:block ,done :eqref ,@h ,@key ,@value (:call :ht-put-id) (:br_on_non_null ,done) ,@slow))))
 (defprim clysm-sys::%ht-put-imm (h key value slow) :value
-  (let ((done (gensym "HTPUT")))
+  (let ((done (cgensym "HTPUT")))
     `((:block ,done :eqref ,@h ,@key ,@value (:call :ht-put) (:br_on_non_null ,done) ,@slow))))
 (defprim clysm-sys::%ht-rem-imm (h key slow) :value
-  (let ((done (gensym "HTREM")))
+  (let ((done (cgensym "HTREM")))
     `((:block ,done :eqref ,@h ,@key (:call :ht-rem) (:br_on_non_null ,done) ,@slow))))
 ;;; (%HT-GET H KEY SLOW): the value of KEY in H or +DELETED+, SLOW (code
 ;;; computing the same, a call) when the helper cannot say
 (defprim clysm-sys::%ht-get (h key slow) :value
-  (let ((done (gensym "HTGET")))
+  (let ((done (cgensym "HTGET")))
     `((:block ,done :eqref ,@h ,@key (:call :ht-get) (:br_on_non_null ,done) ,@slow))))
 (defprim clysm-sys::%ht-absent () :value
   `((:global.get ,(sym-global 'clysm-sys::+deleted+)) (:struct.get :symbol ,+sym-value+)))
@@ -4666,7 +4666,7 @@ not a string (left to EQUAL)."
 ;;; bytes of machine code before).
 (defprim clysm-sys::%site-slot-read (x c) :value
   (let ((tmp (new-local)) (inst (new-local '(:ref :null :instance))) (cv (new-local '(:ref :null :vector)))
-        (e (new-local)) (l (new-local)) (miss (gensym "MISS")) (done (gensym "SREAD")))
+        (e (new-local)) (l (new-local)) (miss (cgensym "MISS")) (done (cgensym "SREAD")))
     `((:block ,done :eqref
         (:block ,miss nil
           ,@c (:ref.cast! :vector) (:local.set ,cv)
@@ -4692,7 +4692,7 @@ not a string (left to EQUAL)."
 (defprim clysm-sys::%site-slot-write (v x c) :value
   (let ((val (new-local)) (tmp (new-local)) (inst (new-local '(:ref :null :instance)))
         (cv (new-local '(:ref :null :vector))) (e (new-local)) (l (new-local))
-        (miss (gensym "MISS")) (done (gensym "SWRITE")))
+        (miss (cgensym "MISS")) (done (cgensym "SWRITE")))
     `(,@v (:local.set ,val) ,@x (:local.set ,tmp)
       (:block ,done :eqref
         (:block ,miss nil
@@ -4724,7 +4724,7 @@ not a string (left to EQUAL)."
 ;;; returned; else null.
 (defun cached-slot-code (x c idx store)
   (let ((tmp (new-local)) (inst (new-local '(:ref :null :instance))) (cv (new-local '(:ref :null :vector)))
-        (k (new-local)) (e (new-local)) (val (new-local)) (miss (gensym "MISS")) (done (gensym "SLOTC")))
+        (k (new-local)) (e (new-local)) (val (new-local)) (miss (cgensym "MISS")) (done (cgensym "SLOTC")))
     `(,@(when store `(,@store (:local.set ,val))) ,@x (:local.set ,tmp)
       (:block ,done :eqref
         (:block ,miss nil
@@ -5168,7 +5168,7 @@ within 64 bits (and not -2^63), else a branch to FAIL.  Uses the locals EE and V
   "Decode parameter P: a fixnum or an integer within 64 bits into the i64
 local X (K := 0), a single / double float into the f64 local D (K := 1 / 2);
 anything else branches to SLOW.  Uses the i32 local V."
-  (let ((done (gensym "DEC")))
+  (let ((done (cgensym "DEC")))
     `((:block ,done nil
         (:local.get ,p) (:ref.test :i31)
         (:if nil nil
@@ -7044,7 +7044,7 @@ rounded to odd (Schubfach's rop)."
 (defprim clysm-sys::%mem-put-string (s start end) :value
   (let ((str (new-local '(:ref :null :string))) (i (new-local :i32)) (e (new-local :i32))
         (p (new-local :i32)) (c (new-local :i32)) (flag (new-local :i32)) (n (new-local :i32))
-        (done (gensym "DONE")) (again (gensym "AGAIN")))
+        (done (cgensym "DONE")) (again (cgensym "AGAIN")))
     `(,@s (:ref.cast :string) (:local.set ,str)
       ,@(idx-code start) (:local.set ,i) ,@(idx-code end) (:local.set ,e)
       (:local.get ,e) (:local.get ,i) :i32.sub (:i32.const 2) :i32.shl (:local.set ,n)
@@ -7073,8 +7073,8 @@ rounded to odd (Schubfach's rop)."
 ;; a new simple string of the N UTF-16 code units at the start of the memory
 (defprim clysm-sys::%mem-get-string (n) :value
   (let ((units (new-local :i32)) (k (new-local :i32)) (cnt (new-local :i32)) (u (new-local :i32))
-        (str (new-local '(:ref :null :string))) (done (gensym "DONE")) (again (gensym "AGAIN"))
-        (done2 (gensym "DONE")) (again2 (gensym "AGAIN")))
+        (str (new-local '(:ref :null :string))) (done (cgensym "DONE")) (again (cgensym "AGAIN"))
+        (done2 (cgensym "DONE")) (again2 (cgensym "AGAIN")))
     (flet ((pair-test ()
              ;; u is a high surrogate and the next unit a low one
              `((:local.get ,u) (:i32.const #xFC00) :i32.and (:i32.const #xD800) :i32.eq
@@ -7121,7 +7121,7 @@ rounded to odd (Schubfach's rop)."
 ;; the value is their number
 (defprim clysm-sys::%mem-put-octets (v start end) :value
   (let ((b (new-local '(:ref :null :bytes))) (i (new-local :i32)) (e (new-local :i32)) (n (new-local :i32))
-        (done (gensym "DONE")) (again (gensym "AGAIN")))
+        (done (cgensym "DONE")) (again (cgensym "AGAIN")))
     `(,@v (:ref.cast :bytes) (:local.set ,b)
       ,@(idx-code start) (:local.set ,i) ,@(idx-code end) (:local.set ,e)
       (:local.get ,e) (:local.get ,i) :i32.sub (:local.set ,n)
@@ -7139,7 +7139,7 @@ rounded to odd (Schubfach's rop)."
 ;; a new simple (unsigned-byte 8) vector of the N octets at the start of the memory
 (defprim clysm-sys::%mem-get-octets (n) :value
   (let ((len (new-local :i32)) (k (new-local :i32)) (b (new-local '(:ref :null :bytes)))
-        (done (gensym "DONE")) (again (gensym "AGAIN")) (done4 (gensym "DONE4")) (again4 (gensym "AGAIN4")))
+        (done (cgensym "DONE")) (again (cgensym "AGAIN")) (done4 (cgensym "DONE4")) (again4 (cgensym "AGAIN4")))
     `(,@(idx-code n) (:local.set ,len)
       (:local.get ,len) (:array.new_default :bytes) (:local.set ,b)
       (:i32.const 0) (:local.set ,k)
@@ -7175,9 +7175,9 @@ rounded to odd (Schubfach's rop)."
   (let* ((b (new-local '(:ref :null :bytes))) (i (new-local :i32)) (e (new-local :i32)) (n (new-local :i32))
          (c (new-local :i32)) (k (new-local :i32)) (more (new-local :i32))
          (str (new-local '(:ref :null :string))) (pass (new-local :i32)) (j (new-local :i32)) (s0 (new-local :i32))
-         (done (gensym "DONE")) (again (gensym "AGAIN")) (inner (gensym "INNER")) (inner-done (gensym "IDONE"))
-         (passes (gensym "PASSES")) (passes-done (gensym "PDONE"))
-         (ascii (gensym "ASCII")) (ascii-done (gensym "ADONE")) (copy (gensym "COPY")) (copy-done (gensym "CDONE")))
+         (done (cgensym "DONE")) (again (cgensym "AGAIN")) (inner (cgensym "INNER")) (inner-done (cgensym "IDONE"))
+         (passes (cgensym "PASSES")) (passes-done (cgensym "PDONE"))
+         (ascii (cgensym "ASCII")) (ascii-done (cgensym "ADONE")) (copy (cgensym "COPY")) (copy-done (cgensym "CDONE")))
     (labels ((lead (limit count mask else)
                ;; a first octet of COUNT continuations: keep its MASK bits
                `((:local.get ,c) (:i32.const ,limit) :i32.ge_u
@@ -7261,7 +7261,7 @@ rounded to odd (Schubfach's rop)."
 (defprim clysm-sys::%utf8-encode-into (string start end bytes pos) :value
   (let* ((str (new-local '(:ref :null :string))) (b (new-local '(:ref :null :bytes)))
          (i (new-local :i32)) (e (new-local :i32)) (p (new-local :i32)) (c (new-local :i32))
-         (done (gensym "DONE")) (again (gensym "AGAIN")))
+         (done (cgensym "DONE")) (again (cgensym "AGAIN")))
     (labels ((put (value-code offset)
                (append `((:local.get ,b) (:local.get ,p))
                        (if (zerop offset) nil `((:i32.const ,offset) :i32.add))
@@ -7298,7 +7298,7 @@ rounded to odd (Schubfach's rop)."
 ;; and END, or -1
 (defprim clysm-sys::%string-last-newline (string start end) :value
   (let ((str (new-local '(:ref :null :string))) (i (new-local :i32)) (s0 (new-local :i32))
-        (done (gensym "DONE")) (again (gensym "AGAIN")))
+        (done (cgensym "DONE")) (again (cgensym "AGAIN")))
     `(,@string (:ref.cast :string) (:local.set ,str) ,@(idx-code start) (:local.set ,s0)
       ,@(idx-code end) (:i32.const 1) :i32.sub (:local.set ,i)
       (:block ,done nil
@@ -7326,8 +7326,8 @@ rounded to odd (Schubfach's rop)."
   ;; buffer's types are not made again, ten instructions of a READ-CHAR
   ;; loop's fifty.
   (let* ((o (new-local)) (sl (new-local '(:ref :null :vector))) (p (new-local :i32)) (b (new-local :i32))
-         (f (new-local)) (fb (new-local '(:ref :null :fsbuf))) (no (gensym "NO")) (out (gensym "OUT"))
-         (cs (new-local)) (ci (new-local '(:ref :null :instance))) (have (gensym "HAVE"))
+         (f (new-local)) (fb (new-local '(:ref :null :fsbuf))) (no (cgensym "NO")) (out (cgensym "OUT"))
+         (cs (new-local)) (ci (new-local '(:ref :null :instance))) (have (cgensym "HAVE"))
          ;; ADVANCE is T or NIL at the call site: decided here
          (adv (cond ((equal advance (nil-code)) :no) ((equal advance (t-code)) :yes) (t :test)))
          (step-file `((:local.get ,fb) (:local.get ,p) (:i32.const 1) :i32.add (:struct.set :fsbuf 1)))
@@ -7385,7 +7385,7 @@ rounded to odd (Schubfach's rop)."
 ;; BYTES between START and END, or END
 (defprim clysm-sys::%bytes-find (bytes byte start end) :value
   (let ((b (new-local '(:ref :null :bytes))) (x (new-local :i32)) (i (new-local :i32)) (e (new-local :i32))
-        (done (gensym "DONE")) (again (gensym "AGAIN")))
+        (done (cgensym "DONE")) (again (cgensym "AGAIN")))
     `(,@bytes (:ref.cast :bytes) (:local.set ,b) ,@(idx-code byte) (:local.set ,x)
       ,@(idx-code start) (:local.set ,i) ,@(idx-code end) (:local.set ,e)
       (:block ,done nil
@@ -7520,7 +7520,7 @@ instructions (FN kind typed-local), which must return or leave nothing."
   (declare (ignorable result))
   (loop for k in kinds
         for kind = (first k)
-        for next = (gensym "NEXT")
+        for next = (cgensym "NEXT")
         collect `(:block ,next :eqref
                    (:local.get ,arg) (:br_on_cast_fail ,next :eqref (:ref ,kind)) (:local.set ,(storage-local kind))
                    ,@(funcall fn kind (storage-local kind))
@@ -7811,7 +7811,7 @@ in local V and the index in local K; else branch to FAIL."
 ;; signals, for anything else)
 (defprim svref (v i) :value
   (let ((tv (new-local)) (ti (new-local)) (vec (new-local '(:ref :null :vector))) (k (new-local :i32))
-        (slow (gensym "SLOW")) (done (gensym "SVREF")))
+        (slow (cgensym "SLOW")) (done (cgensym "SVREF")))
     `(,@v (:local.set ,tv) ,@i (:local.set ,ti)
       (:block ,done :eqref
         (:block ,slow nil
@@ -8415,7 +8415,7 @@ in local V and the index in local K; else branch to FAIL."
     (if *thrown-exits*
         ;; (the image's compiler makes modules whose RUN returns null with
         ;; the exit pending: thrown, as the direct stubs do)
-        (let ((ok (gensym "RUN")))
+        (let ((ok (cgensym "RUN")))
           `((:block ,ok :eqref ,@run (:br_on_non_null ,ok)
               (:call :exit-pending-p) (:if nil nil ((:call :throw-pending-exit)))
               (:ref.null :eq))))
@@ -8627,7 +8627,7 @@ the closure in local 0 is of that type; then VECTOR-CODE when it is an
 ;; the first N words of BUF into the linear memory from 0 (for the host)
 (defprim clysm-sys::%img-to-memory (buf n) :value
   (let ((b (new-local '(:ref :null :limbs))) (len (new-local :i32)) (k (new-local :i32))
-        (done (gensym "DONE")) (again (gensym "AGAIN")))
+        (done (cgensym "DONE")) (again (cgensym "AGAIN")))
     `(,@buf (:ref.cast :limbs) (:local.set ,b) ,@(idx-code n) (:local.set ,len)
       (:local.get ,len) (:i32.const 2) :i32.shl (:local.set ,k)
       ,@(mem-ensure-code k)
@@ -8661,8 +8661,8 @@ the closure in local 0 is of that type; then VECTOR-CODE when it is an
 (defun img-switch-code (index-code cases)
   "Instructions running the code of the case INDEX-CODE (an i32) selects in
 CASES, a list of instruction lists (each leaves nothing), or trapping."
-  (let ((labels (loop for nil in cases collect (gensym "CASE")))
-        (end (gensym "END")) (bad (gensym "BAD")))
+  (let ((labels (loop for nil in cases collect (cgensym "CASE")))
+        (end (cgensym "END")) (bad (cgensym "BAD")))
     (labels ((nest (ls cs)
                ;; the innermost block holds the br_table; after the end of
                ;; the block of case I comes its code
@@ -8679,7 +8679,7 @@ CASES, a list of instruction lists (each leaves nothing), or trapping."
 (defun img-loop-code (counter limit body)
   "Instructions running BODY while the i32 local COUNTER is below the i32
 local LIMIT, incrementing it."
-  (let ((done (gensym "DONE")) (again (gensym "AGAIN")))
+  (let ((done (cgensym "DONE")) (again (cgensym "AGAIN")))
     `((:block ,done nil
         (:loop ,again nil
           (:local.get ,counter) (:local.get ,limit) :i32.ge_u (:br_if ,done)
@@ -8761,7 +8761,7 @@ local LIMIT, incrementing it."
 words that follow, by its type.  COMPACT: a symbol's record is without its
 name and hash (src/preinit.lisp: the objects that the module's globals make
 have theirs, and those of the heap are made with theirs)."
-  (let ((end (gensym "END")))
+  (let ((end (cgensym "END")))
     (flet ((fields (type n &optional cast)
              (loop for f below n
                    append `((:local.get x) (:ref.cast! ,type) (:call :img-ref)
@@ -8866,7 +8866,7 @@ local POS) instead of by calls of :IMG-WORD, :IMG-REF and :IMG-I64: the
 baseline compiler, which compiles IMAGE_LOAD, does not inline calls."
   (let ((word '((:local.get pos) (:i32.load) (:local.get pos) (:i32.const 4) :i32.add (:local.set pos))))
     (labels ((ref ()
-               (let ((r (gensym "REF")))
+               (let ((r (cgensym "REF")))
                  `((:block ,r :eqref
                      ,@word (:local.tee rw) (:i32.const 1) :i32.and
                      (:if nil nil ((:local.get rw) (:i32.const 1) :i32.shr_s :ref.i31 (:br ,r)))
@@ -9038,7 +9038,7 @@ baseline compiler, which compiles IMAGE_LOAD, does not inline calls."
   '(:local.get x) '(:ref.cast! :i31) :i31.get_s '(:local.tee n)
   `(:i32.const ,+struct-inline-max+) :i32.ge_u '(:if nil nil ((:i32.const 0) :ref.i31 :return))
   (let* ((m +struct-inline-max+)
-         (labels (loop for k below m collect (gensym "SZ")))
+         (labels (loop for k below m collect (cgensym "SZ")))
          (code `((:local.get n) (:br_table ,@labels ,(car (last labels))))))
     (flet ((wrong (o k)
              ;; the instance in local O does not have exactly K fields
@@ -9053,8 +9053,8 @@ baseline compiler, which compiles IMAGE_LOAD, does not inline calls."
                             (:br sizes)))))
     `((:block sizes nil ,@code)))
   (let* ((m +struct-inline-max+)
-         (labels (loop for k below m collect (gensym "SEQ")))
-         (dflt (gensym "SEQDONE"))
+         (labels (loop for k below m collect (cgensym "SEQ")))
+         (dflt (cgensym "SEQDONE"))
          (code `((:i32.const ,m) (:local.get n) :i32.sub (:br_table ,@labels ,dflt))))
     ;; arm K compares field M-1-K and falls through to the fields below it
     (loop for k from 0 for l in labels

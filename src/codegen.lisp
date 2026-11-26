@@ -300,7 +300,7 @@ UNWIND-PROTECT of the current function.")
 (defmacro with-pctx ((type) &body body)
   "BODY (code leaving TYPE) as a context of calls of its own; call where the
 dynamic environment (*CATCHERS*, *UWP-FRAMES*) is the context's."
-  (let ((ctx (gensym)))
+  (let ((ctx (cgensym)))
     `(let ((,ctx (new-pctx)))
        (wrap-pctx ,ctx (let ((*pend* ,ctx)) ,@body) ,type #'pend-handler-code))))
 (defvar *catchers* nil
@@ -894,7 +894,7 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
                  (when dual (return-from cg `(,@dual ,@(when mv (mv-one)))))
                `(,@(var-set-code (second node) `(,@(cg (third node)) (:local.tee ,tmp)))
                  (:local.get ,tmp) ,@(when mv (mv-one))))))
-      (:sref (let ((ok (gensym "BOUND")) (h (assoc (second node) *sref-loop-locals*)))
+      (:sref (let ((ok (cgensym "BOUND")) (h (assoc (second node) *sref-loop-locals*)))
                (when (and h (eq (cddr h) *fs*))
                  ;; (read on entry to the loop: SREF-LOOP-WRAP)
                  (return-from cg
@@ -975,7 +975,7 @@ the rest list, as for a known function; else the generic way."
              (f (new-local '(:ref :null :closure)))
              (type (main-type (1+ nreq)))
              (call (if tail :return_call_ref :call_ref))
-             (slow (gensym "GENERIC")) (done (gensym "ACALL")))
+             (slow (cgensym "GENERIC")) (done (cgensym "ACALL")))
         `(,@(loop for a in args for tmp in temps append `(,@(cg a) (:local.set ,tmp)))
           (:block ,done :eqref
             (:block ,slow nil
@@ -1266,17 +1266,17 @@ likely THEN is."
       (cond
         ;; an arm that is a constant: C branches to its target, the other arm follows
         (ta (if (eq ta :next)
-                (let ((lx (gensym "NEXT")))
+                (let ((lx (cgensym "NEXT")))
                   `((:block ,lx nil ,@(branch-code c lx :next h) ,@(branch-code b then else hint))))
                 `(,@(branch-code c ta :next h) ,@(branch-code b then else hint))))
         (tb (if (eq tb :next)
-                (let ((lx (gensym "NEXT")))
+                (let ((lx (cgensym "NEXT")))
                   `((:block ,lx nil ,@(branch-code c :next lx h) ,@(branch-code a then else hint))))
                 `(,@(branch-code c :next tb h) ,@(branch-code a then else hint))))
         ;; C falls through into A; A must not fall through (into B), so a
         ;; :NEXT of A is the end of a block around the whole
-        (t (let* ((lb (gensym "ELSE"))
-                  (lx (and (or (eq then :next) (eq else :next)) (gensym "NEXT")))
+        (t (let* ((lb (cgensym "ELSE"))
+                  (lx (and (or (eq then :next) (eq else :next)) (cgensym "NEXT")))
                   (code `((:block ,lb nil ,@(branch-code c :next lb h)
                             ,@(branch-code a (if (eq then :next) lx then) (if (eq else :next) lx else) hint))
                           ,@(branch-code b then else hint))))
@@ -1288,7 +1288,7 @@ likely THEN is."
     (when (assumed-guard-p c) (return-from cg-if (cg a mv tail)))
     (when (compound-test-p c)
       (return-from cg-if
-        (let ((lf (gensym "ELSE")) (end (gensym "IF")))
+        (let ((lf (cgensym "ELSE")) (end (cgensym "IF")))
           `((:block ,end :eqref
               (:block ,lf nil
                 ,@(branch-code c :next lf (if-branch-hint a b))
@@ -1330,7 +1330,7 @@ likely THEN is."
     (:if (when (or (effect-branch-test-p (second node))
                    (and (compound-test-p (second node)) (recursive-arm-hint (third node) (fourth node))))
            (return-from cg-effect
-             (let* ((lf (gensym "ELSE")) (end (gensym "IF"))
+             (let* ((lf (cgensym "ELSE")) (end (cgensym "IF"))
                     (b (cg-effect (fourth node)))
                     (a `(:block ,lf nil
                           ,@(branch-code (second node) :next lf (if-branch-hint (third node) (fourth node)))
@@ -1918,7 +1918,7 @@ or +CLO-KLAYOUT+)."
                (temps (loop repeat n collect (new-local)))
                (gets (loop for tm in temps collect `(:local.get ,tm)))
                (type (main-type n))
-               (slow (gensym "SLOWN")) (done (gensym "CALLN")))
+               (slow (cgensym "SLOWN")) (done (cgensym "CALLN")))
           `(,@closure-code (:local.set ,tmp)
             ,@(loop for code in arg-codes for tm in temps append `(,@code (:local.set ,tm)))
             (:block ,done :eqref
@@ -2086,7 +2086,7 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
 
 (defun fdef-code (sym)
   (setf (gethash sym *called-functions*) t)
-  (let ((l (gensym "FD")))
+  (let ((l (cgensym "FD")))
     `((:block ,l (:ref :closure)
         (:global.get ,(sym-global sym)) (:struct.get :symbol ,+sym-function+)
         (:br_on_non_null ,l)
@@ -2190,7 +2190,7 @@ that is no generic function), or NIL")
                  (clo (const-init-code closure))
                  (temps (loop repeat n collect (new-local)))
                  (gets (loop for tm in temps collect `(:local.get ,tm)))
-                 (slow (gensym "DSLOW")) (done (gensym "DCALL")))
+                 (slow (cgensym "DSLOW")) (done (cgensym "DCALL")))
             `(,@(loop for code in arg-codes for tm in temps append `(,@code (:local.set ,tm)))
               (:block ,done :eqref
                 (:block ,slow nil
@@ -2229,7 +2229,7 @@ that is no generic function), or NIL")
             (let* ((temps (loop for nil in args collect (new-local)))
                    (f (new-local '(:ref :null :closure)))
                    (type (main-type (length layout)))
-                   (slow (gensym "GENERIC")) (done (gensym "KCALL")))
+                   (slow (cgensym "GENERIC")) (done (cgensym "KCALL")))
               `(,@(loop for code in arg-codes for tmp in temps append `(,@code (:local.set ,tmp)))
                 (:block ,done :eqref
                   (:block ,slow nil
@@ -2299,9 +2299,9 @@ size, so that a short higher-order function (MAPCAR written by hand) with
 the shorter code no longer had the targets of its FUNCALL inlined
 (k-higher-order: MY-MAP 175 -> 150 octets, its budget 875 -> 750, the
 inlining stopped two octets short)."
-  (let ((l (gensym "FN")) (lam (and *fs* (fstate-lam *fs*))))
+  (let ((l (cgensym "FN")) (lam (and *fs* (fstate-lam *fs*))))
     (if (and (lam-p lam) (<= (count-nodes (lam-body lam) *small-caller-nodes*) *small-caller-nodes*))
-        (let ((slow (gensym "SLOW")) (tmp (new-local)))
+        (let ((slow (cgensym "SLOW")) (tmp (new-local)))
           `((:block ,l (:ref :closure)
               ,@code (:local.tee ,tmp) (:br_on_cast ,l :eqref (:ref :closure)) :drop
               (:block ,slow :eqref
@@ -2465,7 +2465,7 @@ and with *SHAKE* it is done only if something refers to SYMBOL
   "REP other than :EQREF (from CG-REP, a local block only): the block and the
 values its RETURN-FROMs pass are raw (an i32, i64 or f64)."
   (destructuring-bind (blk body) (cdr node)
-    (let ((label (gensym "BLOCK")))
+    (let ((label (cgensym "BLOCK")))
       (setf (blk-label blk) label
             (blk-rep blk) rep
             (blk-mv blk) mv
@@ -2483,7 +2483,7 @@ values its RETURN-FROMs pass are raw (an i32, i64 or f64)."
             `(,@(used-save-bsp-code (blk-saved-bsp blk))
               (:block ,label ,(rep-wasm-type rep) ,@body-code))
             ;; non-local: a fresh tag object, try_table
-            (let ((h (gensym "H")) (vtmp (new-local)) (ttmp (new-local)) (etmp (new-local :exnref)))
+            (let ((h (cgensym "H")) (vtmp (new-local)) (ttmp (new-local)) (etmp (new-local :exnref)))
               ;; The body was generated with *tail-ok* possibly true; regenerate is costly,
               ;; so we generated it with tail disabled above when nonlocal.
               `(,@(save-bsp-code (blk-saved-bsp blk))
@@ -2644,10 +2644,10 @@ no other function exits any more (the lambdas that did were inlined) is local."
 is generated."
   (declare (ignore force))
   (unless *thrown-exits*
-   (list (make-blk :name nil :lam lam :label (gensym "FEXIT") :mv t :dyn-depth 0 :uwp-depth 0
+   (list (make-blk :name nil :lam lam :label (cgensym "FEXIT") :mv t :dyn-depth 0 :uwp-depth 0
                   :uwp-frames nil :saved-bsp (new-local :i32))
         (new-local) (new-local)
-        (make-pctx :label (gensym "FPEND") :fs *fs*))))
+        (make-pctx :label (cgensym "FPEND") :fs *fs*))))
 
 (defun exit-globals-code (tag-code value-code)
   "Make the exit (TAG-CODE, VALUE-CODE: one instruction list each, without
@@ -2665,7 +2665,7 @@ an exit pending returns null in turn."
       (destructuring-bind (blk tag val ctx) *fexit*
         (let ((code body))
           (when (tree-member `(:br ,(blk-label blk)) code)
-            (let ((normal (gensym "NORMAL")))
+            (let ((normal (cgensym "NORMAL")))
               (setf code `(,@(when (tree-member `(:local.get ,(blk-saved-bsp blk)) code)
                                (save-bsp-code (blk-saved-bsp blk)))
                            (:block ,normal :eqref
@@ -2814,14 +2814,14 @@ function returns null with the exit pending, through its cleanups."
             '((:ref.null :eq) :return))
       :unreachable)))
 
-(defun new-pctx () (make-pctx :label (gensym "PEND") :fs *fs*))
+(defun new-pctx () (make-pctx :label (cgensym "PEND") :fs *fs*))
 
 (defun wrap-pctx (ctx code type handler)
   "CODE (leaving a value of TYPE, :EQREF or NIL) in the context CTX, whose
 handler is HANDLER (a thunk run in the context's dynamic environment)."
   (if (not (pctx-used ctx))
       code
-      (let ((done (gensym "PDONE")))
+      (let ((done (cgensym "PDONE")))
         `((:block ,done ,type
             (:block ,(pctx-label ctx) nil ,@code (:br ,done))
             ,@(funcall handler))))))
@@ -2961,7 +2961,7 @@ nothing but the functions guarded (when the guard fails) and primitives; else NI
                                                 collect (cdr (assoc k *hoisted-guards* :key #'cdr :test #'equal)))))
                                 `((:local.get ,(car locs))
                                   ,@(loop for l in (cdr locs) append `((:local.get ,l) :i32.and)))))
-                       (pc (new-local :i32)) (slow-entry (gensym "SLOWLOOP")) (done (gensym "LOOPV"))
+                       (pc (new-local :i32)) (slow-entry (cgensym "SLOWLOOP")) (done (cgensym "LOOPV"))
                        (fast-poll (lambda (set-pc)
                                     (subst `((:call :poll-slow) ,@(hoisted-guards-test-code)
                                              ,@flags :i32.eqz
@@ -3071,13 +3071,13 @@ segment (and from closures) set a segment number and branch to a dispatch
 loop with a BR_TABLE."
   (destructuring-bind (tb segments) (cdr node)
     (let* ((n (length segments))
-           (labels (loop for i below n collect (gensym (format nil "SEG~D-" i))))
-           (dispatch (gensym "DISPATCH"))
-           (end (gensym "TBEND"))
+           (labels (loop for i below n collect (cgensym (format nil "SEG~D-" i))))
+           (dispatch (cgensym "DISPATCH"))
+           (end (cgensym "TBEND"))
            (pc (or pc (new-local :i32)))
            (modes (tagbody-go-modes tb segments))
            (need-dispatch (or force-dispatch (tb-nonlocal tb) (find :far modes)))
-           (loop-labels (loop for i below n collect (and (eq (aref modes i) :self) (gensym "TAGLOOP")))))
+           (loop-labels (loop for i below n collect (and (eq (aref modes i) :self) (cgensym "TAGLOOP")))))
       (setf (tb-labels tb) labels (tb-dispatch tb) dispatch (tb-pc tb) pc
             (tb-modes tb) modes (tb-loop-labels tb) loop-labels
             (tb-dyn-depth tb) *dyn-depth* (tb-uwp-depth tb) *uwp-depth* (tb-uwp-frames tb) *uwp-frames*
@@ -3102,7 +3102,7 @@ loop with a BR_TABLE."
                              (wrap-pctx ctx acc nil #'pend-handler-code))
                            acc)))
              (loop-body (if (tb-nonlocal tb)
-                            (let ((h (gensym "H")) (vtmp (new-local)) (ttmp (new-local))
+                            (let ((h (cgensym "H")) (vtmp (new-local)) (ttmp (new-local))
                                   (etmp (new-local :exnref)))
                               `((:block ,h (:type :bt-catch)
                                   (:try_table nil nil ((:catch_ref :lisp-throw ,h))
@@ -3161,7 +3161,7 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
   (destructuring-bind (tag-node body &optional unchecked) (cdr node)
     (let ((tag (new-local)) (saved (new-local :i32))
           (vtmp (new-local)) (ttmp (new-local)) (etmp (new-local :exnref))
-          (done (gensym "CATCH")) (h (gensym "H")))
+          (done (cgensym "CATCH")) (h (cgensym "H")))
       `(,@(cg tag-node) (:local.set ,tag)
         ,@(save-bsp-code saved)
         ;; bind *catch-tags* to the tag: the active tags are its value and the
@@ -3225,7 +3225,7 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
   (destructuring-bind (form cleanup) (cdr node)
     (let* ((saved (new-local :i32)) (res (new-local)) (etmp (new-local :exnref))
            (mvsave (new-local)) (code (new-local :i32))
-           (done (gensym "UWP")) (h (gensym "H")) (land (gensym "LAND"))
+           (done (cgensym "UWP")) (h (cgensym "H")) (land (cgensym "LAND"))
            (frame (make-uwpf :code code :res res :landing land :dyn-depth *dyn-depth*
                              :uwp-depth *uwp-depth* :parent *uwp-frames*))
            (body-code (let ((*tail-ok* nil) (*uwp-depth* (1+ *uwp-depth*))
@@ -3291,7 +3291,7 @@ buffer), with no list or argument vector; else the generic way."
          (ftmp (new-local '(:ref :null :closure)))
          (btemps (loop for nil in before collect (new-local)))
          (v (new-local)) (cnt (new-local :i32)) (acc (new-local))
-         (done (gensym "MVCALL")) (generic (gensym "MVGEN"))
+         (done (cgensym "MVCALL")) (generic (cgensym "MVGEN"))
          (call (if tail :return_call_ref :call_ref)))
     `(,@(coerce-function-code (cg fnode)) (:local.set ,ftmp)
       ,@(loop for a in before for tm in btemps append `(,@(cg a) (:local.set ,tm)))
@@ -3429,7 +3429,7 @@ buffer), with no list or argument vector; else the generic way."
                 `((:global.get ,(js-name-cell-global obj)))
                 (cg-const obj))
           ,@(when mv (mv-one))))))
-  (let ((g (list :ltv (incf *ltv-counter*))) (l (gensym "LTV")))
+  (let ((g (list :ltv (incf *ltv-counter*))) (l (cgensym "LTV")))
     (push (list g :eqref t '((:ref.null :eq))) *misc-globals*)
     (let ((value-code (let ((*fs* *fs*))
                         (let ((name (struct-class-node-name node)))
@@ -3906,7 +3906,7 @@ are of the classes of its specialized version, a tail call of that version."
                                          ;; not a simple one of element type T)
                                          (substitute nil :md2 sig) (substitute nil :md2 sig2)))
                     :test #'equal :from-end t)
-          append (let ((skip (gensym "GENERAL")) (n (length (lam-req lam)))
+          append (let ((skip (cgensym "GENERAL")) (n (length (lam-req lam)))
                        (fvs (entry-clone-free-vars lam)))
                    `((:block ,skip nil
                        ,@(loop for class in s for i from 1
@@ -4243,7 +4243,7 @@ the keys).  (KENTRY-P: the keyword arguments are even in number.)"
     `(;; the pairs from the last, so that the first of a key wins
           ,@(loop for j from (1- (floor nkeyargs 2)) downto 0
                   for kp = (+ 1 npos (* 2 j))
-                  for found = (gensym "KEY")
+                  for found = (cgensym "KEY")
                   append `((:block ,found nil
                              ,@(loop for kw in keys for i from 0
                                      append `((:local.get ,kp) ,@(const-init-code kw) :ref.eq
@@ -4318,7 +4318,7 @@ the keys).  (KENTRY-P: the keyword arguments are even in number.)"
 (defmacro with-clone-inference ((lam sig) &body body)
   "Run BODY with LAM's types inferred for arguments of the classes SIG (as
 COMPILE-SPEC-CLONE does); the types before are restored after."
-  (let ((lvars (gensym "LVARS")) (saved (gensym "SAVED")) (l (gensym "LAM")) (table (gensym "TABLE")))
+  (let ((lvars (cgensym "LVARS")) (saved (cgensym "SAVED")) (l (cgensym "LAM")) (table (cgensym "TABLE")))
     `(let* ((,l ,lam)
             (,lvars (lam-all-lvars ,l))
             (,saved (mapcar (lambda (lv) (cons (lvar-type lv) (lvar-rep lv))) ,lvars))
