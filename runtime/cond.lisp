@@ -887,11 +887,15 @@ error into something else, else NIL (for LOOP's default values)."
          :format-arguments (list nargs (%closure-name f))))
 
 (defun %correctable-package-error (package report control &rest args)
-  "Signal a PACKAGE-ERROR with a CONTINUE restart; returns T if continued."
+  "Signal a PACKAGE-ERROR with a CONTINUE restart; returns T if continued.
+REPORT, the restart's report, is a string, or a control and its arguments
+(written by %MESSAGE-FORMAT: not by FORMAT, which a shaken program that only
+makes packages would keep for it)."
   (restart-case (progn (error 'package-error :package package :format-control control
                                              :format-arguments args)
                        nil)
-    (continue () :report (lambda (s) (write-string report s)) t)))
+    (continue () :report (lambda (s) (if (stringp report) (write-string report s) (apply #'%message-format s report)))
+      t)))
 
 (defun %values-list-error (list)
   (error 'type-error :datum list :expected-type 'list))

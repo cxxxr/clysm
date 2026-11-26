@@ -328,7 +328,7 @@ which leaves out the symbols that its code does not refer to"
               (let ((cands (%inherited-candidates name p)))
                 (when (and (cdr cands)
                            (%correctable-package-error
-                            p (format nil "Shadowing-import ~S." (car cands))
+                            p (list "Shadowing-import ~S." (car cands))
                             "Uninterning ~S from ~A would cause a name conflict among ~S."
                             symbol (package-name p) cands))
                   (%remove-present name p)
@@ -355,7 +355,7 @@ which leaves out the symbols that its code does not refer to"
                      (%correctable-package-error
                       p "Skip it." "~S is not accessible in ~A: ~S has the same name."
                       s (package-name p) found)
-                     (when (%correctable-package-error p (format nil "Import ~S." s)
+                     (when (%correctable-package-error p (list "Import ~S." s)
                                                        "~S is not accessible in ~A." s (package-name p))
                        (import s p)
                        (setq status :internal)))))
@@ -367,7 +367,7 @@ which leaves out the symbols that its code does not refer to"
                 (multiple-value-bind (other ostatus) (find-symbol name u)
                   (when (and ostatus (not (eq other s)) (not (%shadowing-p other u)))
                     (if (%correctable-package-error
-                         u (format nil "Make ~S a shadowing symbol of ~A." other (package-name u))
+                         u (list "Make ~S a shadowing symbol of ~A." other (package-name u))
                          "Exporting ~S from ~A conflicts with ~S in ~A."
                          s (package-name p) other (package-name u))
                         (if (eq ostatus :inherited)
@@ -399,7 +399,7 @@ which leaves out the symbols that its code does not refer to"
           (cond ((and status (eq found s) (not (eq status :inherited))) nil)
                 ((and status (not (eq found s)))
                  (when (%correctable-package-error
-                        p (format nil "Shadowing-import ~S." s)
+                        p (list "Shadowing-import ~S." s)
                         "Importing ~S into ~A conflicts with ~S." s (package-name p) found)
                    (shadowing-import s p)))
                 (t (setf (gethash name (%package-internals p)) s)
@@ -443,7 +443,7 @@ which leaves out the symbols that its code does not refer to"
                      (multiple-value-bind (other status) (find-symbol name p)
                        (when (and status (not (eq other s)) (not (%shadowing-p other p)))
                          (when (%correctable-package-error
-                                p (format nil "Keep ~S (make it a shadowing symbol)." other)
+                                p (list "Keep ~S (make it a shadowing symbol)." other)
                                 "Using ~A in ~A: ~S conflicts with ~S."
                                 (package-name up) (package-name p) s other)
                            (if (eq status :inherited)
@@ -625,7 +625,7 @@ which leaves out the symbols that its code does not refer to"
         ;; (with --shake-symbols, a symbol not there is one that nothing
         ;; refers to: not imported)
         (unless (or status *%dropped-symbol-packages*)
-          (if (%correctable-package-error from (format nil "Intern ~A in ~A." sname (package-name from))
+          (if (%correctable-package-error from (list "Intern ~A in ~A." sname (package-name from))
                                           "DEFPACKAGE: there is no symbol named ~S in ~A."
                                           sname (package-name from))
               (setq s (intern sname from) status t)
