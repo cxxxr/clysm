@@ -24,6 +24,13 @@ section_symbols() {
     || { cat "$log"; exit 1; }
   node tests/lib/symbols.mjs build/lib-test/symbols.mjs || exit 1
 }
+sections="$sections symbols-message"
+section_symbols_message() {
+  # the message of an error that names a symbol whose name is that of one left out
+  bin/clysm library --shake-symbols tests/lib/symbols-message.lisp -o build/lib-test/symbols-message.wasm > "$log" 2>&1 \
+    || { cat "$log"; exit 1; }
+  node tests/lib/symbols-message.mjs build/lib-test/symbols-message.mjs || exit 1
+}
 sections="$sections empty-symbols"
 section_empty_symbols() {
   # a package whose original symbol table becomes empty
