@@ -7,11 +7,11 @@ import { fileURLToPath } from 'node:url';
 // The modules that only one of the threads needs are imported by it (the
 // main thread starts the worker sooner): the worker's
 let makeImports, installSourceMap, imageBuild, imageHeader, compileImageModules, loadImage,
-  byteSources, instrumentWasm, withEagerHints, imageWithOctets, nodeModuleAccess;
+  byteSources, instrumentWasm, withEagerHints, imageWithOctets, installSaveImage, nodeModuleAccess;
 async function importCommon() {
   if (makeImports) return;
   ({ makeImports, installSourceMap, imageBuild, imageHeader, compileImageModules, loadImage,
-     byteSources, instrumentWasm, withEagerHints, imageWithOctets } = await import('./common.mjs'));
+     byteSources, instrumentWasm, withEagerHints, imageWithOctets, installSaveImage } = await import('./common.mjs'));
 }
 async function importWorkerModules() {
   await importCommon();
@@ -334,7 +334,7 @@ export async function runModule(path, args = [], { bytes = null, compiled = null
     // with CLYSM_SAVE_IMAGE set, the modules compiled in the image are
     // recorded, for SAVE-IMAGE (runtime/image.lisp)
     // (=fasls: the modules read from fasls are referred to, not saved)
-    if (process.env.CLYSM_SAVE_IMAGE) state.modules = [];
+    if (process.env.CLYSM_SAVE_IMAGE) { state.modules = []; installSaveImage(state); }
     if (process.env.CLYSM_SAVE_IMAGE === 'fasls') state.imageFasls = true;
   } catch (e) {
     console.error('instantiate failed:', e.message);

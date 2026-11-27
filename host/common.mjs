@@ -454,7 +454,16 @@ export function imageBuild(module) {
   return new TextDecoder().decode(bytes.subarray(p + l, s.end));
 }
 
+// SAVE-IMAGE's way to the host (__clysm_save_image, runtime/image.lisp),
+// given only by a host that records the modules compiled in the image
+// (state.modules an array): elsewhere calling it could only fail, and the
+// global would keep the instance's state from being collected.
+export function installSaveImage(state) {
+  globalThis.__clysm_save_image = (path, nbytes) => saveImage(state, path, nbytes);
+}
+
 function saveImage(state, path, nbytes) {
+  if (!Array.isArray(state.modules)) throw new Error('save-image: the modules compiled in the image are not recorded');
   const fs = globalThis.__clysm_fs;
   const ex = state.instance.exports;
   const heap = new Uint8Array(ex.memory.buffer, 0, nbytes).slice();
@@ -720,7 +729,6 @@ export function makeImports(state, platform) {
     if (typeof fs?.realpathSync?.native !== 'function') return '?';
     try { const stat = fs.statSync(name, noThrow); return stat ? stat.mtimeMs : null; } catch (e) { return null; }
   };
-  globalThis.__clysm_save_image = (path, nbytes) => saveImage(state, path, nbytes);
   globalThis.__clysm_unit_clear = (prefix) => {
     for (const k of Object.keys(state.unitValues ?? {})) if (k.startsWith(prefix)) delete state.unitValues[k];
   };
