@@ -1283,6 +1283,7 @@ compiled, before it is encoded (STATIC-FINISH: *LIVE-DUMP*).")
     ;; of the immutable globals, and the values of the mutable ones
     (add-image-functions *m*)
     (report-undefined-functions)
+    (fail-on-unused)
     (when *shake*
       (if *preinit-parts*
           (funcall *preinit-function* *m* *preinit-parts* #'after-shake)

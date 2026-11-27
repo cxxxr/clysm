@@ -70,6 +70,15 @@ section_warn_unused() {
   if grep -q 'is never used\|is assigned but never read' "$log"; then
     echo "lib: variables never used were told without CLYSM_WARN_UNUSED"; exit 1
   fi
+  # (CLYSM_WARN_UNUSED=error: the compilation fails, after the warnings)
+  if CLYSM_WARN_UNUSED=error bin/clysm library tests/lib/warn-unused.lisp -o build/lib-test/warn-unused-error.wasm \
+       > "$log" 2>&1; then
+    echo "lib: CLYSM_WARN_UNUSED=error compiled a program with variables never used"; exit 1
+  fi
+  grep -q '9 variables never used (CLYSM_WARN_UNUSED=error)' "$log" \
+    || { echo "lib: CLYSM_WARN_UNUSED=error failed otherwise:"; cat "$log"; exit 1; }
+  [ "$(grep -c 'is never used\|is assigned but never read' "$log")" = 9 ] \
+    || { echo "lib: CLYSM_WARN_UNUSED=error did not tell the variables first:"; cat "$log"; exit 1; }
   echo "lib: warn-unused ok"
 }
 sections="$sections clos"
