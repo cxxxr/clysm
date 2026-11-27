@@ -26,7 +26,7 @@ for d in contrib/*; do
   cp -r "$d" "$out/contrib/"
 done
 cp third_party/asdf/asdf.lisp "$out/third_party/asdf/"
-cp tools/runtime-files.lisp tools/system-files.lisp tools/gen-library.mjs tools/static-build.lisp "$out/tools/"
+cp tools/runtime-files.lisp tools/system-files.lisp tools/gen-library.mjs tools/wasm-opt.mjs tools/static-build.lisp "$out/tools/"
 cp README.md "$out/"
 version="0.1.$(git rev-list --count HEAD)"
 commit=$(git rev-parse --short HEAD)
@@ -45,6 +45,8 @@ cat > "$out/package.json" <<EOF
     "./host/*": "./host/*"
   },
   "engines": { "node": ">=24" },
+  "peerDependencies": { "binaryen": ">=124" },
+  "peerDependenciesMeta": { "binaryen": { "optional": true } },
   "files": ["bin", "host", "runtime", "data", "lib", "ui", "contrib", "third_party", "tools",
             "clysmc.wasm", "clysm-native.wasm", "clysm-native.img", "README.md", "VERSION"],
   "clysm": { "commit": "$commit" }

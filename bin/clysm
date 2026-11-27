@@ -1,7 +1,7 @@
 #!/bin/sh
 # Clysm — a Common Lisp implementation targeting WebAssembly GC.
 #
-#   clysm compile [--shake] [--shake-symbols] [--shake-why REPORT] [--eval-string] FILE... [-o OUT.wasm]
+#   clysm compile [--shake] [--shake-symbols] [--shake-why REPORT] [--eval-string] [--wasm-opt[=ARGS]] FILE... [-o OUT.wasm]
 #                                         compile Lisp sources (with the runtime) to a Wasm module;
 #                                         --shake leaves out the functions nothing refers to;
 #                                         --shake-symbols (implies --shake) the symbols too: the
@@ -11,6 +11,12 @@
 #                                         kept function and what kept it to REPORT; --eval-string
 #                                         keeps the reader and evaluator for the host's eval_string
 #                                         (a module without --shake always has them)
+#                                         --wasm-opt[=ARGS] (compile and library) passes the
+#                                         module through Binaryen's wasm-opt (-Oz, or ARGS), and
+#                                         writes the names of its functions again for it
+#                                         (tools/wasm-opt.mjs): a tenth less of a shaken library
+#                                         when it is compressed; it needs the npm package binaryen
+#                                         where the project's packages are, or CLYSM_WASM_OPT_BIN
 #   clysm build [--system NAME]... [--asd FILE.asd]... [--load FILE]... [--asdf] [--shake] [--eval FORM]... [--main FUNCTION [--image]] [-o OUT.wasm] [FILE...]
 #                                         build an application into ONE module with the runtime:
 #                                         the ASDF systems NAME (found as (require :asdf) and
@@ -36,9 +42,9 @@
 #   clysm swank [--port N]                start a SWANK server for SLIME (M-x slime-connect),
 #                                         port 4005 by default; needs Quicklisp
 #   clysm exec OUT.wasm [ARGS]            run a compiled module
-#   clysm test [--watch] [-j N] [--dom] [--system NAME [--asd FILE]] FILE...
+#   clysm test [--watch] [-j N] [--dom] [--shake] [--wasm-opt[=ARGS]] [--system NAME [--asd FILE]] FILE...
 #                                         run test programs (see docs/INTERNALS.md)
-#   clysm library [--shake] [--shake-symbols] [--shake-why REPORT] [--eval-string] FILE... -o DIR/NAME.wasm
+#   clysm library [--shake] [--shake-symbols] [--shake-why REPORT] [--eval-string] [--wasm-opt[=ARGS]] FILE... -o DIR/NAME.wasm
 #                                         compile a library for JavaScript: NAME.wasm,
 #                                         NAME.wasm.debug (the names of its functions, for
 #                                         stack traces), NAME.mjs (the functions of
@@ -105,30 +111,36 @@ heap_image() {
 }
 case "$cmd" in
   compile)
-    out="a.wasm"; files=""; shake=""
+    out="a.wasm"; files=""; shake=""; wasmopt=""
     while [ $# -gt 0 ]; do
       case "$1" in -o) out="$2"; shift 2;; --shake) shake="--shake $shake"; shift;;
                    --shake-symbols) shake="--shake-symbols $shake"; shift;;
                    --shake-why) shake="$shake --shake-why $2"; shift 2;;
                    --preinit-through) [ $# -ge 2 ] || { echo "--preinit-through needs a source file" >&2; exit 1; }; shake="$shake --preinit-through $2"; shift 2;;
                    --eval-string) shake="$shake --eval-string"; shift;;
-                   --thrown-exits) shake="$shake --thrown-exits"; shift;; *) files="$files $1"; shift;; esac
+                   --thrown-exits) shake="$shake --thrown-exits"; shift;;
+                   --wasm-opt|--wasm-opt=*) wasmopt="$1"; shift;; *) files="$files $1"; shift;; esac
     done
-    exec sbcl --dynamic-space-size "$SBCL_HEAP" --script "$ROOT/tools/build.lisp" $shake "$out" $files ;;
+    [ -n "$wasmopt" ] || exec sbcl --dynamic-space-size "$SBCL_HEAP" --script "$ROOT/tools/build.lisp" $shake "$out" $files
+    "$NODE" "$ROOT/tools/wasm-opt.mjs" --find > /dev/null || exit 1   # (before the compiler runs)
+    sbcl --dynamic-space-size "$SBCL_HEAP" --script "$ROOT/tools/build.lisp" $shake "$out" $files || exit 1
+    exec "$NODE" "$ROOT/tools/wasm-opt.mjs" "$wasmopt" "$out" ;;
   library)
-    out=""; files=""; shake=""
+    out=""; files=""; shake=""; wasmopt=""
     while [ $# -gt 0 ]; do
       case "$1" in -o) out="$2"; shift 2;; --shake) shake="--shake $shake"; shift;;
                    --shake-symbols) shake="--shake-symbols $shake"; shift;;
                    --shake-why) shake="$shake --shake-why $2"; shift 2;;
                    --preinit-through) [ $# -ge 2 ] || { echo "--preinit-through needs a source file" >&2; exit 1; }; shake="$shake --preinit-through $2"; shift 2;;
                    --eval-string) shake="$shake --eval-string"; shift;;
-                   --thrown-exits) shake="$shake --thrown-exits"; shift;; *) files="$files $1"; shift;; esac
+                   --thrown-exits) shake="$shake --thrown-exits"; shift;;
+                   --wasm-opt|--wasm-opt=*) wasmopt="$1"; shift;; *) files="$files $1"; shift;; esac
     done
     [ -n "$out" ] || { echo "clysm library: -o DIR/NAME.wasm is needed" >&2; exit 1; }
+    [ -z "$wasmopt" ] || "$NODE" "$ROOT/tools/wasm-opt.mjs" --find > /dev/null || exit 1   # (before the compiler runs)
     mkdir -p "$(dirname "$out")"
     sbcl --dynamic-space-size "$SBCL_HEAP" --script "$ROOT/tools/build.lisp" $shake "$out" $files || exit 1
-    exec "$NODE" "$ROOT/tools/gen-library.mjs" "$out" ;;
+    exec "$NODE" "$ROOT/tools/gen-library.mjs" "$out" ${wasmopt:+"$wasmopt"} ;;
   run)
     files=""
     while [ $# -gt 0 ]; do

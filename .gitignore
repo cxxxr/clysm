@@ -2,3 +2,4 @@ build/
 *.fasl
 *.wasm
 .playwright-mcp/
+node_modules/

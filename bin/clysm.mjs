@@ -7,10 +7,12 @@
 //   clysm run [OPTION...] FILE... [-- ARGS]
 //     OPTION: --shake --shake-symbols --shake-why REPORT --eval-string --thrown-exits
 //             --preinit-through FILE (as bin/clysm compile)
+//             --wasm-opt[=ARGS] (the module through Binaryen's wasm-opt, -Oz or ARGS:
+//             tools/wasm-opt.mjs; it needs the npm package binaryen, or CLYSM_WASM_OPT_BIN)
 //   clysm build [--system NAME]... [--asd FILE.asd]... [--load FILE]... [--asdf] [--shake] [--eval FORM]... [--main FUNCTION [--image]] [-o OUT.wasm] [FILE...]
 //                            (an application with its ASDF systems as one module)
 //   clysm exec OUT.wasm [ARGS]
-//   clysm test [--watch] [-j N] [--dom] [--system NAME [--asd FILE.asd]] FILE...
+//   clysm test [--watch] [-j N] [--dom] [--shake] [--wasm-opt[=ARGS]] [--system NAME [--asd FILE.asd]] FILE...
 //   clysm repl | clysm script FILE | clysm eval [--no-userinit] FORM...
 //   clysm swank [--port N]   (a SWANK server for SLIME; needs Quicklisp)
 import { spawn, spawnSync } from 'node:child_process';
@@ -83,6 +85,27 @@ function compileQuiet(files, out, shake) {
   });
 }
 
+// the module OUT through wasm-opt (tools/wasm-opt.mjs), where it is
+const wasmOptTool = path.join(root, 'tools', 'wasm-opt.mjs');
+const wasmOptOption = (a) => a === '--wasm-opt' || a.startsWith('--wasm-opt=');
+// (asked before the compiler runs: without a wasm-opt nothing is compiled)
+function needWasmOpt(option) {
+  if (option && spawnSync(node, [wasmOptTool, '--find'], { stdio: ['ignore', 'ignore', 'inherit'] }).status !== 0) process.exit(1);
+}
+function optimise(out, option) {
+  const status = run([wasmOptTool, option, path.resolve(out)]);
+  if (status !== 0) process.exit(status);
+}
+function optimiseQuiet(out, option) {
+  return new Promise((resolve) => {
+    const child = spawn(node, [wasmOptTool, option, out], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let log = '';
+    child.stdout.on('data', (b) => { log += b; });
+    child.stderr.on('data', (b) => { log += b; });
+    child.on('close', (code) => resolve({ ok: code === 0, log }));
+  });
+}
+
 function runQuiet(wasm, env) {
   return new Promise((resolve) => {
     const child = spawn(node, [runHost, wasm], { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...env } });
@@ -97,7 +120,7 @@ function runQuiet(wasm, env) {
 // system before it; it passes when it exits with status 0
 async function test(args) {
   let watch = false, jobs = Math.max(1, os.availableParallelism ? os.availableParallelism() - 1 : 2),
-      dom = false, system = null, asd = null, shake = false;
+      dom = false, system = null, asd = null, shake = false, wasmOpt = null;
   const files = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -107,6 +130,7 @@ async function test(args) {
     else if (a === '--system') system = args[++i];
     else if (a === '--asd') asd = args[++i];
     else if (a === '--shake') shake = true;
+    else if (wasmOptOption(a)) { wasmOpt = a; needWasmOpt(a); }
     else files.push(path.resolve(a));
   }
   if (!files.length) { console.error('clysm test: no test files'); process.exit(1); }
@@ -124,6 +148,10 @@ async function test(args) {
         fs.rmSync(wasm, { force: true });
         const built = await compileQuiet([...base, f], wasm, shake);
         if (!built.ok) { results[i] = { f, ok: false, log: built.log, what: 'compile' }; continue; }
+        if (wasmOpt) {
+          const optimised = await optimiseQuiet(wasm, wasmOpt);
+          if (!optimised.ok) { results[i] = { f, ok: false, log: optimised.log, what: 'wasm-opt' }; continue; }
+        }
         const ran = await runQuiet(wasm, dom ? { CLYSM_DOM: '1' } : {});
         results[i] = { f, ok: ran.code === 0, log: ran.log, what: `exit ${ran.code}` };
       }
@@ -176,43 +204,49 @@ function compile(files, out, shake, options = []) {
 // the options of the compiler (as bin/clysm and tools/build.lisp take
 // them): --shake, and those that imply it, are SHAKE, the others OPTIONS
 function parse(args) {
-  const files = []; let out = null; let shake = false; let rest = []; const options = [];
+  const files = []; let out = null; let shake = false; let rest = []; const options = []; let wasmOpt = null;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '-o') out = args[++i];
     else if (a === '--shake') shake = true;
     else if (a === '--shake-symbols' || a === '--eval-string' || a === '--thrown-exits') options.push(a);
     else if (a === '--shake-why') options.push(a, path.resolve(args[++i]));
+    else if (wasmOptOption(a)) wasmOpt = a;
     else if (a === '--preinit-through') {
       if (i + 1 >= args.length) { console.error('--preinit-through needs a source file'); process.exit(1); }
       options.push(a, path.resolve(args[++i]));
     } else if (a === '--') { rest = args.slice(i + 1); break; }
     else files.push(a);
   }
-  return { files, out, shake, options, rest };
+  return { files, out, shake, options, rest, wasmOpt };
 }
 
 const [cmd, ...args] = process.argv.slice(2);
 switch (cmd) {
   case 'compile': {
-    const { files, out, shake, options } = parse(args);
+    const { files, out, shake, options, wasmOpt } = parse(args);
+    needWasmOpt(wasmOpt);
     compile(files, out || 'a.wasm', shake, options);
+    if (wasmOpt) optimise(out || 'a.wasm', wasmOpt);
     break;
   }
   case 'library': {
-    const { files, out, shake, options } = parse(args);
+    const { files, out, shake, options, wasmOpt } = parse(args);
+    needWasmOpt(wasmOpt);
     if (!out) { console.error('clysm library: -o DIR/NAME.wasm is needed'); process.exit(1); }
     fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true });
     compile(files, out, shake, options);
-    process.exit(run([path.join(root, 'tools', 'gen-library.mjs'), path.resolve(out)]));
+    process.exit(run([path.join(root, 'tools', 'gen-library.mjs'), path.resolve(out), ...(wasmOpt ? [wasmOpt] : [])]));
     break;
   }
   case 'run': {
-    const { files, shake, options, rest } = parse(args);
+    const { files, shake, options, rest, wasmOpt } = parse(args);
+    needWasmOpt(wasmOpt);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'clysm-'));
     const out = path.join(dir, 'run.wasm');
     try {
       compile(files, out, shake, options);
+      if (wasmOpt) optimise(out, wasmOpt);
       process.exitCode = run([runHost, out, ...rest]);
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
     break;
@@ -271,7 +305,7 @@ switch (cmd) {
     break;
   }
   default:
-    console.log(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(1, 15)
+    console.log(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(1, 17)
       .map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
     process.exit(cmd ? 1 : 0);
 }

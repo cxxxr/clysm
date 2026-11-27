@@ -13,12 +13,19 @@
 # to are left out).
 # With THROWN=1 they are compiled with --thrown-exits (every non-local exit a
 # Wasm exception); only so, not with NATIVE, INTERP, STATIC or SELFHOST.
+# With WASM_OPT=1 (or the arguments of wasm-opt, as --wasm-opt=ARGS of
+# bin/clysm compile) every compiled module passes through Binaryen's wasm-opt
+# (tools/wasm-opt.mjs) before it runs; not with NATIVE or INTERP, which
+# compile nothing here.
 # The files run TEST_JOBS at a time (the number of processors by default).
 # Compiled by the SBCL-hosted compiler, they are compiled by one process
 # (tools/build-many.lisp), which compiles the runtime once.
 cd "$(dirname "$0")/.." || exit 1
 if [ -n "$THROWN" ] && [ -n "$NATIVE$INTERP$STATIC$SELFHOST" ]; then
   echo "THROWN=1 compiles with tools/build.lisp only, not with NATIVE, INTERP, STATIC or SELFHOST" >&2; exit 2
+fi
+if [ -n "$WASM_OPT" ] && [ -n "$NATIVE$INTERP" ]; then
+  echo "WASM_OPT=1 is of the modules compiled here, not of NATIVE or INTERP" >&2; exit 2
 fi
 NURSERY="--max-semi-space-size=${CLYSM_NURSERY_MB:-256}"   # as bin/clysm starts the image
 JOBS=${TEST_JOBS:-$(nproc 2>/dev/null || echo 4)}
@@ -66,6 +73,10 @@ run_case() {
       if [ -n "$STATIC" ]; then compile="bin/clysm build -o"; else compile="node host/run.mjs build/clysmc.wasm${SHAKE:+ --shake}"; fi
       timeout 600 $compile "build/tests/$name.wasm" "$f" > "build/tests/$name.build" 2>&1
     fi || { echo "FAIL $name (compile)" > "build/tests/$name.res"; return; }
+    if [ -n "$WASM_OPT" ]; then
+      CLYSM_WASM_OPT="$WASM_OPT" timeout 600 node tools/wasm-opt.mjs "build/tests/$name.wasm" > "build/tests/$name.opt" 2>&1 ||
+        { echo "FAIL $name (wasm-opt)" > "build/tests/$name.res"; return; }
+    fi
     timeout 20 node host/run.mjs "build/tests/$name.wasm" > "build/tests/$name.out" 2> "build/tests/$name.err"
   fi
   if cmp -s "build/tests/$name.exp" "build/tests/$name.out"; then

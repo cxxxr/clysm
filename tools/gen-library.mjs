@@ -1,18 +1,30 @@
 // Write the JavaScript entry of a Lisp library (bin/clysm library):
-//   node tools/gen-library.mjs DIR/NAME.wasm
+//   node tools/gen-library.mjs DIR/NAME.wasm [--wasm-opt[=ARGS]]
 // loads the module once to learn its exports (JS:EXPORT), then writes
 // DIR/NAME.mjs (an ES module whose named exports are the Lisp functions),
 // DIR/NAME.d.ts (their TypeScript types) and copies the host files that
 // they need into DIR/clysm/; the names and places of the functions, for
 // stack traces, are moved from DIR/NAME.wasm to DIR/NAME.wasm.debug.
+// --wasm-opt (or CLYSM_WASM_OPT in the environment) first passes the module
+// through Binaryen's wasm-opt (tools/wasm-opt.mjs), before anything is read
+// of it or made from it: the exports, the names and what is embedded are
+// those of the optimised module.
 import fs from 'node:fs';
 import path from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { load } from '../host/lib.mjs';
+import { wasmOpt, wasmOptRequest } from './wasm-opt.mjs';
 
 const wasmPath = path.resolve(process.argv[2]);
+let wasmOptArgs;
+try {
+  const unknown = process.argv.slice(3).filter((a) => a !== '--wasm-opt' && !a.startsWith('--wasm-opt='));
+  if (unknown.length) throw new Error(`unknown argument ${unknown[0]}`);
+  const option = process.argv.slice(3).at(-1);
+  wasmOptArgs = wasmOptRequest(option === undefined ? null : option === '--wasm-opt' ? true : option.slice('--wasm-opt='.length));
+} catch (e) { console.error(`clysm library: ${e.message}`); process.exit(1); }
 const dir = path.dirname(wasmPath);
 const name = path.basename(wasmPath, '.wasm');
 
@@ -23,11 +35,21 @@ const name = path.basename(wasmPath, '.wasm');
 // holds its module in itself holds them in a string of their own, decoded
 // when a stack trace is first mapped: 4 % less to decompress and compile
 // when it starts.)
-const compiled = fs.readFileSync(wasmPath);
-let kept = compiled, debugBytes = null;
+let compiled = fs.readFileSync(wasmPath);
 // (a module whose sections were taken out already, by gen-library run on it
 // before: they are in NAME.wasm.debug)
 const debugPath = `${wasmPath}.debug`;
+if (wasmOptArgs) {
+  try {
+    // (with its names and places, which wasm-opt.mjs writes again for the functions that are left)
+    const whole = WebAssembly.Module.customSections(new WebAssembly.Module(compiled), 'name').length || !fs.existsSync(debugPath)
+      ? compiled : Buffer.concat([compiled, fs.readFileSync(debugPath).subarray(8)]);
+    compiled = wasmOpt(whole, wasmOptArgs, { log: (line) => console.log(`; ${line}`) });
+  } catch (e) { console.error(`clysm library: ${e.message}`); process.exit(1); }
+  fs.rmSync(debugPath, { force: true });
+  fs.writeFileSync(wasmPath, compiled);
+}
+let kept = compiled, debugBytes = null;
 {
   const bytes = compiled;
   const leb = (p) => { let x = 0, s = 0, c; do { c = bytes[p++]; x |= (c & 127) << s; s += 7; } while (c & 128); return [x >>> 0, p]; };
