@@ -363,8 +363,10 @@ the declarations (when forms follow it)."
   (let ((whole (gensym "WHOLE")))
     (multiple-value-bind (decls forms) (%split-decls body)
       (let ((bindings (%db-bindings lambda-list whole)))
+        ;; (only the macro's own variables are IGNORABLE: one of the lambda
+        ;; list that the body does not use is told, CLYSM_WARN_UNUSED)
         `(let* ((,whole ,expression) ,@bindings)
-           (declare (ignorable ,@(mapcar #'car bindings)))
+           (declare (ignorable ,@(remove-if #'symbol-package (mapcar #'car bindings))))
            ,@decls
            ,@forms)))))
 

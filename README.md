@@ -67,6 +67,17 @@ $ make web                                # the REPL in a browser page, in build
 $ make npm                                # an npm package that needs only Node.js (no SBCL)
 ```
 
+With `CLYSM_WARN_UNUSED=1` in the environment, the compiler warns of the
+variables of the program that nothing uses (`; warning: variable X is never
+used in F (file:line)`, or `is assigned but never read`), as SBCL's style
+warnings do. It looks after macroexpansion: a variable that a `macrolet`'s
+expansion reads is used, a binding of a special variable is not told, and
+`ignore` and `ignorable` declarations quiet it, also in a form inside the
+binding (where a macro puts its body's declarations). A variable that the
+toplevel form does not name was made by a macro, and the warning says so
+(`, bound by a macro`); a macro's own variables (`gensym`) are not told.
+The runtime's code is not looked at. The warnings do not stop the compilation.
+
 Libraries are loaded from an existing Quicklisp installation:
 
 ```lisp

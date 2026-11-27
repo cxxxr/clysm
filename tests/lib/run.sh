@@ -52,6 +52,26 @@ section_messages() {
   fi
   echo "lib: messages ok"
 }
+sections="$sections warn-unused"
+section_warn_unused() {
+  # the variables never used (CLYSM_WARN_UNUSED): those of
+  # tests/lib/warn-unused.expected, and none without the variable
+  CLYSM_WARN_UNUSED=1 bin/clysm library tests/lib/warn-unused.lisp -o build/lib-test/warn-unused.wasm > "$log" 2>&1 \
+    || { cat "$log"; exit 1; }
+  grep 'is never used\|is assigned but never read' "$log" | sed -E 's| \(/[^)]*/tests/lib/| (tests/lib/|' \
+    > build/lib-test/warn-unused.out
+  if ! cmp -s tests/lib/warn-unused.expected build/lib-test/warn-unused.out; then
+    echo "lib: the warnings of variables never used differ (tests/lib/warn-unused.expected):"
+    diff tests/lib/warn-unused.expected build/lib-test/warn-unused.out
+    exit 1
+  fi
+  bin/clysm library tests/lib/warn-unused.lisp -o build/lib-test/warn-unused-quiet.wasm > "$log" 2>&1 \
+    || { cat "$log"; exit 1; }
+  if grep -q 'is never used\|is assigned but never read' "$log"; then
+    echo "lib: variables never used were told without CLYSM_WARN_UNUSED"; exit 1
+  fi
+  echo "lib: warn-unused ok"
+}
 sections="$sections clos"
 section_clos() {
   # classes and a Gray stream in a shaken library (tests/lib/clos.lisp)

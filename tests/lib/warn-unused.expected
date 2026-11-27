@@ -1,0 +1,9 @@
+; warning: variable CLYSM-T/WARN-UNUSED::B is never used in CLYSM-T/WARN-UNUSED::UNUSED-PARAMETER (tests/lib/warn-unused.lisp:12)
+; warning: variable CLYSM-T/WARN-UNUSED::B-SUPPLIED-P is never used in CLYSM-T/WARN-UNUSED::UNUSED-OPTIONAL (tests/lib/warn-unused.lisp:13)
+; warning: variable CLYSM-T/WARN-UNUSED::C is never used in CLYSM-T/WARN-UNUSED::UNUSED-OPTIONAL (tests/lib/warn-unused.lisp:13)
+; warning: variable CLYSM-T/WARN-UNUSED::Y is never used in CLYSM-T/WARN-UNUSED::UNUSED-LET (tests/lib/warn-unused.lisp:14)
+; warning: variable CLYSM-T/WARN-UNUSED::Y is never used in CLYSM-T/WARN-UNUSED::UNUSED-LET* (tests/lib/warn-unused.lisp:15)
+; warning: variable CLYSM-T/WARN-UNUSED::R is never used in CLYSM-T/WARN-UNUSED::UNUSED-VALUE (tests/lib/warn-unused.lisp:16)
+; warning: variable CLYSM-T/WARN-UNUSED::B is never used in CLYSM-T/WARN-UNUSED::UNUSED-DESTRUCTURED (tests/lib/warn-unused.lisp:17)
+; warning: variable CLYSM-T/WARN-UNUSED::N is assigned but never read in CLYSM-T/WARN-UNUSED::ONLY-ASSIGNED (tests/lib/warn-unused.lisp:18)
+; warning: variable CLYSM-T/WARN-UNUSED::FIXTURE-B is never used in CLYSM-T/WARN-UNUSED::USES-ONE-FIXTURE (tests/lib/warn-unused.lisp:60), bound by a macro
