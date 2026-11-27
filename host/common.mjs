@@ -79,7 +79,11 @@ export function moduleCodeCount(mod) {
   if (sections.length === 0) return 0;
   const b = new Uint8Array(sections[0]);
   let n = 0, shift = 0, i = 0;
-  for (;;) { const c = b[i++]; n |= (c & 0x7f) << shift; if (c < 0x80) break; shift += 7; }
+  for (;;) {
+    // (a section that is empty or ends inside the number)
+    if (i >= b.length) throw new Error('clysm.codes: malformed section');
+    const c = b[i++]; n |= (c & 0x7f) << shift; if (c < 0x80) break; shift += 7;
+  }
   return n;
 }
 
@@ -413,8 +417,10 @@ export function withCompilationHints(bytes, functions, optimized = []) {
   const { funcs } = wasmImports(bytes, sections);
   const code = sections.find((x) => x.id === 10);
   const name = new TextEncoder().encode('metadata.code.compilation_priority');
-  const body = [...leb(functions.length)];
-  for (const f of [...new Set(functions)].sort((a, b) => a - b)) {
+  // (each function once: the count is that of the entries written)
+  const unique = [...new Set(functions)].sort((a, b) => a - b);
+  const body = [...leb(unique.length)];
+  for (const f of unique) {
     // (compilation priority 0, and optimization priority 0 for OPTIMIZED)
     if (optimized.includes(f)) body.push(...leb(funcs + f), 0, 2, 0, 0);
     else body.push(...leb(funcs + f), 0, 1, 0);
@@ -492,7 +498,13 @@ export function imageHeader(module, file) {
   if (!file || file.length < 12) return null;
   if (new TextDecoder().decode(file.subarray(0, 8)) !== 'CLYSMIMG') return null;
   const length = new DataView(file.buffer, file.byteOffset).getUint32(8, true);
-  const header = JSON.parse(new TextDecoder().decode(file.subarray(12, 12 + length)));
+  if (12 + length > file.length) return null;
+  let header;
+  // (a damaged header)
+  try { header = JSON.parse(new TextDecoder().decode(file.subarray(12, 12 + length))); } catch (e) { return null; }
+  if (!header || typeof header !== 'object') return null;
+  if (!Number.isSafeInteger(header.modulesLength) || header.modulesLength < 0
+      || !Number.isSafeInteger(header.heapLength) || header.heapLength < 0) return null;
   if (!header.build || header.build !== (typeof module === 'string' ? module : imageBuild(module))) return null;
   header.modulesOffset = (12 + length + 7) & ~7;
   header.heapOffset = header.modulesOffset + header.modulesLength;
