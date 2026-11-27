@@ -1,0 +1,16 @@
+;; FOR ... ON assigns each tail before testing for an atom (CLHS 6.1.2.1.3):
+;; in FINALLY the variable is the terminal atom (issue #131)
+(print (loop for tail on '(1) finally (return tail)))
+(print (loop for tail on '(1 2 3) finally (return tail)))
+(print (loop for tail on '(1 2 . 3) finally (return tail)))
+(print (loop for tail on nil finally (return tail)))
+(print (loop for tail on '(1 2 3 4) by #'cddr finally (return tail)))
+(print (loop for tail on '(1 2 3) by (lambda (l) (cdr l)) finally (return tail)))
+(print (loop for tail on '(1 2 3) collect tail))
+(print (loop for tail on '(1 2 3) append tail))
+(print (loop for (a b) on '(1 2 3) collect (list a b)))
+;; the other iteration clauses
+(print (loop for v in '(7) finally (return v)))
+(print (loop for v across #(7) finally (return v)))
+(print (loop for v from 0 below 1 finally (return v)))
+(print (loop for v downfrom 1 above 0 finally (return v)))
