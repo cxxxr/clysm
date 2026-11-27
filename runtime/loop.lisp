@@ -203,9 +203,17 @@ large or circular constants do not add unbounded macroexpansion work."
                                          `(locally (declare (optimize (safety 0))) (the ,type (car ,g)))
                                          `(car ,g))))
                        (%loop-pre s f))))
-                 (progn
-                   (%loop-end-test s `(atom ,g))
-                   (dolist (f (%loop-destructure-setq var g)) (%loop-pre s f))))
+                 (if (and var (symbolp var))
+                     ;; a simple variable is assigned each tail before the
+                     ;; test, the terminal atom included (CLHS 6.1.2.1.3:
+                     ;; FOR X ON '(1) leaves X NIL in FINALLY, as in SBCL)
+                     (progn
+                       (%loop-pre s `(setq ,var ,g))
+                       (%loop-end-test s `(atom ,g)))
+                     ;; a destructuring pattern is assigned from conses only
+                     (progn
+                       (%loop-end-test s `(atom ,g))
+                       (dolist (f (%loop-destructure-setq var g)) (%loop-pre s f)))))
              (%loop-step s `(setq ,g ,(cond (step-op `(,step-op ,g))
                                              (step-fn `(funcall ,step-fn ,g))
                                              (t `(cdr ,g)))))))
