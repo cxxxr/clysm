@@ -540,10 +540,15 @@ destructuring-bind (defined by the runtime)."
   (destructuring-bind (name &rest options) (cdr form)
     (let* ((name (string name))
            (hp (ensure-host-package-for name))
-           (nicknames nil) (uses nil) (exports nil) (shadows nil) (imports nil) (interns nil))
+           (nicknames nil) (uses nil) (exports nil) (shadows nil) (imports nil) (interns nil)
+           (local-nicknames nil))
       (dolist (opt options)
         (case (car opt)
           (:nicknames (setf nicknames (mapcar #'string (cdr opt))))
+          (:local-nicknames
+           (setf local-nicknames
+                 (append local-nicknames
+                         (mapcar (lambda (e) (list (string (first e)) (string (second e)))) (cdr opt)))))
           (:use (setf uses (mapcar #'string (cdr opt))))
           (:export (setf exports (append exports (mapcar #'string (cdr opt)))))
           (:shadow (setf shadows (append shadows (mapcar #'string (cdr opt)))))
@@ -562,13 +567,18 @@ destructuring-bind (defined by the runtime)."
                   (shadowing-import sym hp)
                   (import sym hp))))))
       (dolist (u uses) (use-package (find-target-package u) hp))
+      ;; (the reader looks the local nicknames of *READ-PACKAGE* up first:
+      ;; FIND-TARGET-PACKAGE)
+      (setf (gethash hp *target-local-nicknames*)
+            (mapcar (lambda (ln) (cons (first ln) (find-target-package (second ln)))) local-nicknames))
       (dolist (i interns) (intern i hp))
       (dolist (e exports) (export (intern e hp) hp))
       (emit-toplevel-form `(clysm-sys::%defpackage ,name ',nicknames ',uses ',exports ',shadows
                                                    ',(mapcar (lambda (o) (list* (car o) (string (second o))
                                                                                 (mapcar #'string (cddr o))))
                                                              imports)
-                                                   ',interns)
+                                                   ',interns
+                                                   ,@(when local-nicknames `(nil ',local-nicknames)))
                           env))))
 
 

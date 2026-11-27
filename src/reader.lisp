@@ -14,6 +14,10 @@
   "host package -> target package primary name")
 (defvar *target-nicknames* (make-hash-table :test 'equal)
   "target primary name -> list of nicknames")
+(defvar *read-package*)                 ; (its value is set below)
+(defvar *target-local-nicknames* (make-hash-table :test 'eq)
+  "host package -> ((local nickname . host package) ...): the package-local
+nicknames of a target package (DEFPACKAGE :LOCAL-NICKNAMES)")
 
 (defun register-target-package (name host-pkg &optional nicknames)
   (setf (gethash name *target-packages*) host-pkg
@@ -38,7 +42,8 @@ name, registered when it is first met.")
 
 (defun find-target-package (name &optional (errorp t))
   (let ((name (if (packagep name) (return-from find-target-package name) (string name))))
-    (or (gethash name *target-packages*)
+    (or (cdr (assoc name (gethash *read-package* *target-local-nicknames*) :test #'string=))
+        (gethash name *target-packages*)
         (and *image-packages*
              (let ((p (find-package name)))
                (and p (image-target-package p) p)))
@@ -72,6 +77,7 @@ and macro expanders can use target package names."
 
 (defun init-target-packages ()
   (clrhash *target-packages*) (clrhash *host->target-name*) (clrhash *target-nicknames*)
+  (clrhash *target-local-nicknames*)
   (register-target-package "COMMON-LISP" (find-package :cl) '("CL"))
   (register-target-package "KEYWORD" (find-package :keyword) '())
   (register-target-package "SYSTEM" (find-package :clysm-sys) '("SYS"))
