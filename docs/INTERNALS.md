@@ -8639,6 +8639,19 @@ calls it (8 KB). Both are now `notinline`: 9,044,220 bytes (+40 KB: the
 new functions, the small upgrader and its callers' second ways, the
 shake's limits in the compiler).
 
+**A stream does not name the pretty printer.** `%stream-write-char`,
+`%stream-write-string` and `%stream-column` (`runtime/stream.lisp`) called
+`%pp-capture-write-char`, `%pp-capture-write-string` and `%pp-stream-column`
+for a stream of kind `:pp`, so every program that writes to a stream kept
+what a pretty stream does with a character (the queue of its sections, the
+tabs, the line breaks: 18 KB in a library that never makes one). A pretty
+stream now carries the three functions in its `streams` slot (a vector made
+by `%make-pretty-stream`, the one place that makes such a stream; the slot
+is otherwise that of broadcast, concatenated, two-way and echo streams),
+and the three branches call through it (`+pp-write-char+`,
+`+pp-write-string+`, `+pp-column+`). A program that pretty-prints keeps
+them as before, through `%make-pretty-stream`.
+
 **Names in the class system's data are not calls with `--shake-symbols`
 either.** `ph-mark-data-symbol` (`src/preinit.lisp`) keeps, with
 `--shake-symbols`, the global of a symbol that the class system's data
