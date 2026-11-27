@@ -6,7 +6,7 @@
 ;;;; size.  Character files are UTF-8; binary elements of N bits take
 ;;;; ceiling(N/8) octets, little endian.
 
-(defstruct (stream (:constructor %make-plain-stream) (:constructor %make-pp-stream (kind buffer))
+(defstruct (stream (:constructor %make-plain-stream) (:constructor %make-pp-stream (kind buffer streams))
                    (:predicate %streamp)
                    ;; (a slot vector: the fast paths below and in src/prims.lisp read it)
                    (%slot-vector))
@@ -17,7 +17,12 @@
   end               ; string-in end
   (column 0)
   unread            ; pushed back char
-  streams           ; component streams
+  ;; component streams; of a :PP stream, the functions that write to it and
+  ;; tell its column (+PP-WRITE-CHAR+...), given when the stream is made
+  ;; (runtime/pprint.lisp, %MAKE-PRETTY-STREAM): a shaken program that makes
+  ;; none does not keep them (18 KB with what they call) for the stream
+  ;; functions here that would call them
+  streams
   symbol            ; synonym stream symbol
   (open t)
   pathname
@@ -78,6 +83,11 @@
   ;; with threads: held while the buffer is filled (one thread waits for
   ;; the input of the connection, runtime/thread.lisp)
   (lock nil))
+
+;;; Indices in the STREAMS of a :PP stream
+(defconstant +pp-write-char+ 0)    ; (stream char)
+(defconstant +pp-write-string+ 1)  ; (pps simple-string start end), no newline in it
+(defconstant +pp-column+ 2)        ; (stream)
 
 ;;; Slots of streams read without the accessors (fast paths below)
 (defconstant +stream-kind-slot+ 0)
@@ -637,7 +647,7 @@ slot is :FILE): an ASCII character is one octet stored at once."
     (:broadcast (dolist (x (stream-streams s)) (%stream-write-char x c)))
     ((:two-way :echo) (%stream-write-char (cadr (stream-streams s)) c))
     (:synonym (%stream-write-char (%synonym-target s) c))
-    (:pp (%pp-capture-write-char s c))
+    (:pp (funcall (the function (svref (stream-streams s) +pp-write-char+)) s c))
     (t (%not-output-stream s 'character)))
   (if (char= c #\Newline)
       (setf (stream-column s) 0)
@@ -825,7 +835,8 @@ character output file (its FAST-OUT slot is :FILE), and update its column."
        (if (do ((i start (+ i 1))) ((>= i end) t)
              (declare (fixnum i))
              (when (eq (%schar string i) #\Newline) (return nil)))
-           (progn (%pp-capture-write-string (stream-buffer s) string start end)
+           (progn (funcall (the function (svref (stream-streams s) +pp-write-string+))
+                           (stream-buffer s) string start end)
                   (setf (stream-column s) (+ (stream-column s) (- end start))))
            (do ((i start (+ i 1))) ((>= i end))
              (declare (fixnum i))
@@ -865,7 +876,7 @@ character output file (its FAST-OUT slot is :FILE), and update its column."
     (:gray (stream-line-column s))
     (:synonym (%stream-column (%synonym-target s)))
     ((:two-way :echo) (%stream-column (cadr (stream-streams s))))
-    (:pp (%pp-stream-column s))
+    (:pp (funcall (the function (svref (stream-streams s) +pp-column+)) s))
     (:string-out (%string-out-column s))
     ;; the column of the last component stream, as the values of the other
     ;; operations on a broadcast stream

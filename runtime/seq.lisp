@@ -1875,6 +1875,38 @@ its index when POSP."
     (%do-region (x i seq start end from-end)
       (when (%match mode fn neg item (%key key x)) (return (if posp i x))))))
 
+;;; FIND and POSITION of an item with no :TEST, :TEST-NOT or :KEY (%FIND-EQL,
+;;; %POSITION-EQL: the functions themselves so called, and the calls that
+;;; name none of those keywords, by the compiler macros below) do not refer
+;;; to %FIND-POSITION, whose loops for each test, key and kind of vector are
+;;; 41 KB of code that a shaken program then does not carry.
+(defun %find-position-eql (item seq from-end start end posp)
+  "%FIND-POSITION of ITEM by EQL with no key (its MODE 0)."
+  ;; a specialized vector read forwards, as there (a simple string or a
+  ;; simple vector is read by the callers, or below)
+  (when (and (not from-end) (not (listp seq)) (%simple-array-p seq)
+             (not (%simple-string-p seq)) (not (%simple-vector-p seq)))
+    (return-from %find-position-eql
+      (macrolet ((scan (ref)
+                   `(let ((end (%check-bounds start end (%simple-length seq))))
+                      (declare (fixnum end))
+                      (do ((i start (+ i 1))) ((>= i end) nil)
+                        (declare (fixnum i))
+                        (let ((x (,ref seq i)))
+                          (when (eql item x) (return (if posp i x))))))))
+        (cond ((eql (%storage-kind seq) 11)
+               (let ((seq seq))
+                 (declare (type (simple-array (signed-byte 32) (*)) seq))
+                 (scan aref)))
+              ((eql (%storage-kind seq) 4)
+               (let ((seq seq))
+                 (declare (type (simple-array (unsigned-byte 8) (*)) seq))
+                 (scan aref)))
+              (t (scan %simple-ref))))))
+  (let ((end (%region-end seq start end from-end)))
+    (%do-region (x i seq start end from-end)
+      (when (eql item x) (return (if posp i x))))))
+
 (defun find-if (pred seq &key key from-end (start 0) end)
   (%find-position nil 2 (%fn pred) nil seq key from-end start end nil))
 (defun find-if-not (pred seq &key key from-end (start 0) end)
@@ -1913,13 +1945,17 @@ general way)."
   ;; :KEY #'IDENTITY and :TEST #'EQL are the defaults
   (when (or (eq key #'identity) (eq key 'identity)) (setq key nil))
   (when (or (eq test #'eql) (eq test 'eql)) (setq test nil))
-  (when (and (null key) (null test) (null test-not) (null from-end)
-             (or (%simple-string-p seq) (%simple-vector-p seq)))
-    (return-from find (%eql-scan item seq start end (return-from find (aref seq i)) nil)))
-  (if (and (listp seq) (null key) (null test) (null test-not) (null from-end) (eql start 0) (null end))
-      (do ((l seq (cdr l))) ((%endp l) nil) (when (eql item (car l)) (return (car l))))
+  (if (or key test test-not)
       (%with-test (mode fn neg) (test test-not)
-        (%find-position item mode fn neg seq key from-end start end nil))))
+        (%find-position item mode fn neg seq key from-end start end nil))
+      (%find-eql item seq start end from-end)))
+(defun %find-eql (item seq start end from-end)
+  "FIND of ITEM with no :TEST, :TEST-NOT or :KEY."
+  (when (and (null from-end) (or (%simple-string-p seq) (%simple-vector-p seq)))
+    (return-from %find-eql (%eql-scan item seq start end (return-from %find-eql (aref seq i)) nil)))
+  (if (and (listp seq) (null from-end) (eql start 0) (null end))
+      (do ((l seq (cdr l))) ((%endp l) nil) (when (eql item (car l)) (return (car l))))
+      (%find-position-eql item seq from-end start end nil)))
 
 ;;; FIND, POSITION and COUNT of an item with no keyword arguments: functions of two arguments
 (defun %find-with-test (item seq test posp)
@@ -1939,7 +1975,7 @@ general way)."
              (declare (fixnum i))
              (when (eql item (%svref seq i)) (return (%svref seq i))))))
         ((listp seq) (do ((l seq (cdr l))) ((%endp l) nil) (when (eql item (car l)) (return (car l)))))
-        (t (find item seq :start 0))))
+        (t (%find-eql item seq 0 nil nil))))
 (defun %position2 (item seq)
   (cond ((%simple-string-p seq)
          (and (characterp item)
@@ -1952,7 +1988,7 @@ general way)."
            (do ((i 0 (+ i 1))) ((>= i n) nil)
              (declare (fixnum i))
              (when (eql item (%svref seq i)) (return i)))))
-        (t (position item seq :start 0))))
+        (t (%position-eql item seq 0 nil nil))))
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defun %short-constant-sequence (form)
     "The elements of FORM when it is a literal string or quoted list of at most
@@ -2034,9 +2070,13 @@ POSITION when they are only a :TEST of a known function, else NIL."
           `(let* ,binds
              (cond ((%simple-string-p ,s) ,(scan '%schar '%string-length))
                    ((%simple-vector-p ,s) ,(scan '%svref '%svlength))
-                   (t (locally (declare (notinline ,name))
-                        (,name ,x ,s ,@(when test `(,(if negp :test-not :test) ,(if known `(function ,known) f)))
-                               :start ,st :end ,en ,@(when from-end '(:from-end t))))))))))))
+                   ;; (with no test, not by the function of all the keywords:
+                   ;; see %FIND-POSITION-EQL)
+                   (t ,(if test
+                           `(locally (declare (notinline ,name))
+                              (,name ,x ,s ,(if negp :test-not :test) ,(if known `(function ,known) f)
+                                     :start ,st :end ,en ,@(when from-end '(:from-end t))))
+                           `(,(if posp '%position-eql '%find-eql) ,x ,s ,st ,en ,from-end))))))))))
 
 ;;; FIND and POSITION of an item in a short literal sequence: comparisons inline
 ;;; Compiler macros whose expanders are needed only by the compiler: on the
@@ -2091,22 +2131,26 @@ POSITION when they are only a :TEST of a known function, else NIL."
   ;; :KEY #'IDENTITY and :TEST #'EQL are the defaults
   (when (or (eq key #'identity) (eq key 'identity)) (setq key nil))
   (when (or (eq test #'eql) (eq test 'eql)) (setq test nil))
-  (when (and (null key) (null test) (null test-not) (null from-end)
+  (if (or key test test-not)
+      (%with-test (mode fn neg) (test test-not)
+        (%find-position item mode fn neg seq key from-end start end t))
+      (%position-eql item seq start end from-end)))
+(defun %position-eql (item seq start end from-end)
+  "POSITION of ITEM with no :TEST, :TEST-NOT or :KEY."
+  (when (and (null from-end)
              (or (%simple-string-p seq) (%simple-vector-p seq) (and (listp seq) (null end) (eql start 0))))
-    (return-from position (%eql-scan item seq start end (return-from position i) nil)))
+    (return-from %position-eql (%eql-scan item seq start end (return-from %position-eql i) nil)))
   ;; from the end of a simple string or vector
-  (when (and (null key) (null test) (null test-not) from-end
-             (or (%simple-string-p seq) (%simple-vector-p seq)))
+  (when (and from-end (or (%simple-string-p seq) (%simple-vector-p seq)))
     (let ((end (%check-bounds start end (length seq))))
-      (return-from position
+      (return-from %position-eql
         (if (%simple-string-p seq)
             (and (characterp item)
                  (do ((i (%fx- end 1) (%fx- i 1))) ((%fx< i start) nil)
                    (when (eq item (%schar seq i)) (return i))))
             (do ((i (%fx- end 1) (%fx- i 1))) ((%fx< i start) nil)
               (when (eql item (%svref seq i)) (return i)))))))
-  (%with-test (mode fn neg) (test test-not)
-    (%find-position item mode fn neg seq key from-end start end t)))
+  (%find-position-eql item seq from-end start end t))
 
 (defun %count-matches (item mode fn neg seq key from-end start end)
   ;; the plainest call first: a predicate on the elements of a whole list

@@ -86,12 +86,16 @@
                 (%pps-tabs pps) nil)
           (setf (stream-column s) 0)
           s)
-        (%make-pp-stream :pp (%make-pps :target target
-                                        :line-length line-length
-                                        :start-column start-column
-                                        :print-lines *print-lines*
-                                        :blocks (list (%make-lblock))
-                                        :output #'%pp-output)))))
+        (%make-pp-stream :pp
+                         (%make-pps :target target
+                                    :line-length line-length
+                                    :start-column start-column
+                                    :print-lines *print-lines*
+                                    :blocks (list (%make-lblock))
+                                    :output #'%pp-output)
+                         ;; (+PP-WRITE-CHAR+, +PP-WRITE-STRING+, +PP-COLUMN+)
+                         (vector #'%pp-capture-write-char #'%pp-capture-write-string
+                                 #'%pp-stream-column)))))
 
 (defun %pp-output (pps force-newlines-p partial-p)
   "Output what can be of the queue of PPS (%MAYBE-OUTPUT); if nothing
