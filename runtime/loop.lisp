@@ -22,8 +22,19 @@
   ;; parser state is kept in a simple vector:
   ;; 0 tokens, 1 bindings(rev), 2 pre(rev), 3 body(rev), 4 steps(rev), 5 initially(rev),
   ;; 6 finally(rev), 7 result-form, 8 name, 9 accumulators alist, 10 default-acc,
-  ;; 11 end-tag, 12 first-flag var, 13 post-pre (rev), 14 ALWAYS/NEVER/THEREIS seen,
-  ;; 15 variable types, 16 a FOR = clause seen
+  ;; 11 end-tag, 12 first-flag var, 13 next (rev), 14 ALWAYS/NEVER/THEREIS seen,
+  ;; 15 variable types, 16 the FOR clauses being parsed follow a main clause
+  ;;
+  ;; The termination tests and the assignments of the variables of the
+  ;; iteration clauses are made twice: in the PRE forms, before the first
+  ;; iteration, and in the NEXT forms, which are added to the steps right
+  ;; after the steps of their clause (or of their group of clauses joined by
+  ;; AND).  So each clause is stepped, tested and assigned before the next
+  ;; one is stepped (CLHS 6.1.2.1: the clauses are stepped sequentially):
+  ;; when a clause ends the loop, the variables of the clauses before it have
+  ;; their new values (FOR X ON '(1 2) FOR Y IN '(1): X is (2) in FINALLY).
+  ;; The FOR clauses after a main clause (e.g. WHILE) are tested and
+  ;; assigned in the body, where they are, from their PRE forms only.
   (defun %loop-new-state (tokens)
     (let ((s (make-array 17 :initial-element nil)))
       (setf (svref s 0) tokens)
@@ -137,20 +148,12 @@ the default value of its type (and no declaration when there is none)."
   ;; clause of a conditional (where IT is recognized)
   (defvar *%loop-it* nil)
 
-  (defun %loop-end-test (s form)
-    (setf (%ls s 2) (cons `(when ,form (go ,(%ls s 11))) (%ls s 2))))
+  (defun %loop-first (s form) (setf (%ls s 2) (cons form (%ls s 2))))
+  (defun %loop-next (s form) (setf (%ls s 13) (cons form (%ls s 13))))
+  ;; a test or an assignment made before each iteration
+  (defun %loop-pre (s form) (%loop-first s form) (%loop-next s form))
+  (defun %loop-end-test (s form) (%loop-pre s `(when ,form (go ,(%ls s 11)))))
 
-  (defun %loop-pre (s form) (setf (%ls s 2) (cons form (%ls s 2))))
-
-  ;; The termination test of a clause over a list or a vector is also made
-  ;; right after its step, so that the clauses after it are not stepped when
-  ;; it ends the loop; but not after a FOR = clause, which is stepped with
-  ;; the PRE forms: there the test in the PRE forms comes after that
-  ;; clause's step, in the order of the clauses (FOR A = 0 THEN B FOR (C B)
-  ;; IN LIST: A is the last B when the loop ends, as in SBCL).
-  (defun %loop-step-test (s form)
-    (unless (%ls s 16)
-      (%loop-step s `(when ,form (go ,(%ls s 11))))))
   (defun %loop-step (s form) (setf (%ls s 4) (cons form (%ls s 4))))
 
   (defun %loop-list-element-type (form)
@@ -203,12 +206,9 @@ large or circular constants do not add unbounded macroexpansion work."
                  (progn
                    (%loop-end-test s `(atom ,g))
                    (dolist (f (%loop-destructure-setq var g)) (%loop-pre s f))))
-             ;; each clause is stepped and then tested (the clauses after
-             ;; it are not stepped when it terminates the loop)
              (%loop-step s `(setq ,g ,(cond (step-op `(,step-op ,g))
                                              (step-fn `(funcall ,step-fn ,g))
-                                             (t `(cdr ,g)))))
-             (%loop-step-test s (if (%lkw kw "IN") `(%endp ,g) `(atom ,g)))))
+                                             (t `(cdr ,g)))))))
           ((%lkw kw "ACROSS")
            ;; a simple string or a simple vector is read inline (the element
            ;; read of an array of unknown type is inline for a simple vector
@@ -227,28 +227,31 @@ large or circular constants do not add unbounded macroexpansion work."
                                   (schar ,vec ,i)
                                   (if (simple-vector-p ,vec) (svref ,vec ,i) (aref ,vec ,i)))))
                (%loop-pre s f))
-             (%loop-step s `(setq ,i (+ ,i 1)))
-             (%loop-step-test s `(>= ,i ,len))))
+             (%loop-step s `(setq ,i (+ ,i 1)))))
           ((%lkw kw "=")
-           (setf (%ls s 16) t)
            (let ((init (%loop-pop s)))
              (%loop-bind-pattern s var)
              (if (%lkw (%loop-peek s) "THEN")
                  (let ((then (progn (%loop-pop s) (%loop-pop s))))
-                   (unless (%ls s 12) (setf (%ls s 12) (gensym "FIRST")))
-                   (if (or later (%lkw (%loop-peek s) "AND"))
-                       ;; stepped in parallel with the other clauses of the
-                       ;; group: the THEN form is evaluated before their steps
-                       (let ((tmp (gensym "NEXT")) (steps (%ls s 4)) (new nil))
-                         (%loop-add-binding s tmp nil)
-                         (do () ((eq steps group-steps)) (push (car steps) new) (setq steps (cdr steps)))
-                         (setf (%ls s 4) (append (reverse new) (list `(setq ,tmp ,then)) group-steps))
-                         (%loop-pre s `(if ,(%ls s 12)
-                                           (progn ,@(%loop-destructure-setq var init))
-                                           (progn ,@(%loop-destructure-setq var tmp)))))
-                       (%loop-pre s `(if ,(%ls s 12)
-                                         (progn ,@(%loop-destructure-setq var init))
-                                         (progn ,@(%loop-destructure-setq var then))))))
+                   (when (or later (%lkw (%loop-peek s) "AND"))
+                     ;; stepped in parallel with the other clauses of the
+                     ;; group: the THEN form is evaluated before their steps
+                     (let ((tmp (gensym "NEXT")) (steps (%ls s 4)) (new nil))
+                       (%loop-add-binding s tmp nil)
+                       (do () ((eq steps group-steps)) (push (car steps) new) (setq steps (cdr steps)))
+                       (setf (%ls s 4) (append (reverse new) (list `(setq ,tmp ,then)) group-steps))
+                       (setq then tmp)))
+                   (if (%ls s 16)
+                       ;; after a main clause: assigned in the body, by a
+                       ;; flag telling the first iteration
+                       (progn
+                         (unless (%ls s 12) (setf (%ls s 12) (gensym "FIRST")))
+                         (%loop-first s `(if ,(%ls s 12)
+                                             (progn ,@(%loop-destructure-setq var init))
+                                             (progn ,@(%loop-destructure-setq var then)))))
+                       (progn
+                         (dolist (f (%loop-destructure-setq var init)) (%loop-first s f))
+                         (dolist (f (%loop-destructure-setq var then)) (%loop-next s f)))))
                  (dolist (f (%loop-destructure-setq var init)) (%loop-pre s f)))))
           ((%lkw-in kw '("BEING" "EACH" "THE"))
            (%loop-parse-being s var kw))
@@ -288,12 +291,7 @@ large or circular constants do not add unbounded macroexpansion work."
                                 (if inclusive `(> ,var ,lim) `(>= ,var ,lim)))))
         ;; stepped, then tested: after the loop the variable has the first
         ;; value beyond the limit (as in the MIT LOOP)
-        (%loop-step s `(setq ,var ,(if down `(- ,var ,step) `(+ ,var ,step))))
-        (when have-to
-          (%loop-step s `(when ,(if down
-                                    (if inclusive `(< ,var ,lim) `(<= ,var ,lim))
-                                    (if inclusive `(> ,var ,lim) `(>= ,var ,lim)))
-                           (go ,(%ls s 11))))))))
+        (%loop-step s `(setq ,var ,(if down `(- ,var ,step) `(+ ,var ,step)))))))
 
   (defun %loop-parse-being (s var kw)
     (when (%lkw-in kw '("BEING")) (when (%lkw-in (%loop-peek s) '("THE" "EACH")) (%loop-pop s)))
@@ -456,22 +454,30 @@ large or circular constants do not add unbounded macroexpansion work."
              (progn ,@(reverse then))
              (progn ,@(reverse else))))))
 
+  (defun %loop-flush-next (s)
+    "Adds the NEXT forms of the clauses just parsed to the steps, after theirs."
+    (setf (%ls s 4) (append (%ls s 13) (%ls s 4))
+          (%ls s 13) nil))
+
   (defun %loop-parse-clause (s)
     (let ((kw (%loop-pop s)))
       (cond
         ((%lkw kw "NAMED") (setf (%ls s 8) (%loop-pop s)))
         ((%lkw-in kw '("FOR" "AS"))
          (let ((group-steps (%ls s 4)) (pre (%ls s 2)))
+           (setf (%ls s 16) (and (%ls s 3) t))
            (%loop-parse-for s group-steps nil)
            (do () ((not (%lkw (%loop-peek s) "AND")))
              (%loop-pop s) (%loop-parse-for s group-steps t))
-           ;; after a main clause (e.g. WHILE), the variables are set and
-           ;; tested where the clause is, as other implementations do
-           (when (%ls s 3)
-             (let ((new nil) (p (%ls s 2)))
-               (do () ((eq p pre)) (push (car p) new) (setq p (cdr p)))
-               (setf (%ls s 2) pre
-                     (%ls s 3) (append (reverse new) (%ls s 3)))))))
+           (if (%ls s 16)
+               ;; after a main clause (e.g. WHILE), the variables are set
+               ;; and tested where the clause is, as other implementations do
+               (let ((new nil) (p (%ls s 2)))
+                 (do () ((eq p pre)) (push (car p) new) (setq p (cdr p)))
+                 (setf (%ls s 2) pre
+                       (%ls s 3) (append (reverse new) (%ls s 3))
+                       (%ls s 13) nil))
+               (%loop-flush-next s))))
         ((%lkw kw "WITH")
          ;; WITH clauses joined by AND bind in parallel: the init forms are
          ;; evaluated into temporaries first
@@ -506,7 +512,8 @@ large or circular constants do not add unbounded macroexpansion work."
          (let ((g (gensym "COUNT")))
            (%loop-add-binding s g (%loop-pop s))
            (%loop-end-test s `(<= ,g 0))
-           (%loop-pre s `(setq ,g (- ,g 1)))))
+           (%loop-pre s `(setq ,g (- ,g 1)))
+           (%loop-flush-next s)))
         ((%lkw kw "WHILE") (setf (%ls s 3) (cons `(unless ,(%loop-pop s) (go ,(%ls s 11))) (%ls s 3))))
         ((%lkw kw "UNTIL") (setf (%ls s 3) (cons `(when ,(%loop-pop s) (go ,(%ls s 11))) (%ls s 3))))
         ((%lkw kw "ALWAYS")
@@ -546,19 +553,7 @@ large or circular constants do not add unbounded macroexpansion work."
                  (first (%ls s 12))
                  (result (%ls s 7))
                  (type-decls nil)
-                 (pre (reverse (%ls s 2)))
-                 (once nil))
-            ;; The termination tests at the head of the PRE forms that are
-            ;; made again right after their steps (those of FOR over a
-            ;; list, a vector or numbers) are made before the first
-            ;; iteration only: nothing is evaluated between the test
-            ;; after the step and the head of the next iteration.  (Not
-            ;; with a FOR = clause, whose step is among the PRE forms.)
-            (unless (%ls s 16)
-              (do () ((not (and pre (consp (car pre)) (eq (car (car pre)) 'when)
-                                (equal (cddr (car pre)) `((go ,end)))
-                                (member (car pre) (%ls s 4) :test #'equal))))
-                (setq once (cons (car pre) once) pre (cdr pre))))
+                 (pre (reverse (%ls s 2))))
             `(block ,name
                (let* (,@(progn (setq type-decls (%loop-type-declarations s)) (reverse (%ls s 1)))
                       ,@(when first `((,first t))))
@@ -566,9 +561,8 @@ large or circular constants do not add unbounded macroexpansion work."
                  (macrolet ((loop-finish () '(go ,end)))
                  (tagbody
                     ,@(reverse (%ls s 5))
-                    ,@(reverse once)
-                    ,top
                     ,@pre
+                    ,top
                     ,@(reverse (%ls s 3))
                     ,@(when first `((setq ,first nil)))
                     ,@(reverse (%ls s 4))
