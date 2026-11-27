@@ -38,7 +38,7 @@
     *called-functions* *initial-symbol-values* *deferred-macros* *macros-ready* *dynamic-functions*
     *runtime-consts* *js-name-cell-globals* *name-cells-at-start* *node-types* *ti-analyzed* *spec-clones* *raw-clones* *spec-cloneable*
     *inline-candidates* *inlined-into* *declared-inline* *declared-ftypes* *lvar-lams* *read-package*
-    *target-packages* *host->target-name* *target-nicknames*
+    *target-packages* *host->target-name* *target-nicknames* *target-local-nicknames*
     ;; (the rest of the state of a module, *CODEGEN-STATE-BINDINGS*)
     *fasl-guard-globals* *fasl-guards-set* *fasl-guards-pending* *live-constants* *helpers*
     *current-lam* *catch-clones* *direct-closures*
@@ -105,6 +105,7 @@ runtime's toplevel forms make, made when the program is built
                  *target-packages* (make-hash-table :test 'equal)
                  *host->target-name* (make-hash-table :test 'eq)
                  *target-nicknames* (make-hash-table :test 'equal)
+                 *target-local-nicknames* (make-hash-table :test 'eq)
                  ;; (the runtime's files are compiled from what they say
                  ;; alone, as when SBCL hosts the compiler)
                  *live-macro-hook* nil *live-special-hook* nil *live-constant-hook* nil
