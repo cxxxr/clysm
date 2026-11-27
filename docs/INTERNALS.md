@@ -8652,6 +8652,24 @@ and the three branches call through it (`+pp-write-char+`,
 `+pp-write-string+`, `+pp-column+`). A program that pretty-prints keeps
 them as before, through `%make-pretty-stream`.
 
+**`find` and `position` of an item without a test.** `find` and `position`
+ended in `%find-position` (44 KB: see above) whatever their keywords, and
+so did the compiler macros' calls on a sequence that is neither a simple
+string nor a simple vector at run time. With no `:test`, `:test-not` or
+`:key` they now end in `%find-eql` and `%position-eql` (the same first
+loops as before), and those in `%find-position-eql`: `%find-position`'s
+mode 0 with no key, which is three loops over a specialized simple vector
+and `%do-region`. A shaken program whose calls of `find` and `position`
+name no test or key (and that does not refer to the symbols `find` and
+`position` otherwise: a symbol kept in the heap, the name of a slot for
+one, keeps its function) carries 3 KB in place of `%find-position`.
+`find-if`, `position-if`, `count`, `remove` and the calls with a test or a
+key use `%find-position` as before. The module of one export with both
+changes: 920,516 -> 901,265 bytes (`gzip -9` 300,847 -> 294,702;
+`tests/lib/one.max-bytes` 930,000, `tests/lib/one-symbols.max-bytes`
+760,000). The REPL image grew by 15.6 KB (8,822,364 -> 8,837,959 bytes):
+the new functions and their typed copies.
+
 **Names in the class system's data are not calls with `--shake-symbols`
 either.** `ph-mark-data-symbol` (`src/preinit.lisp`) keeps, with
 `--shake-symbols`, the global of a symbol that the class system's data
