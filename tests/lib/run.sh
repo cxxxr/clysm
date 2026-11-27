@@ -142,6 +142,32 @@ section_xz() {
   node tests/lib/compressed.mjs build/lib-test/compressed-xz-lazy lazy async-early || exit 1
   node tests/lib/xz.mjs || exit 1
 }
+sections="$sections wasm-opt"
+section_wasm_opt() {
+  # --wasm-opt (tools/wasm-opt.mjs): a wasm-opt that is not there is an error, not a module left as it was
+  if CLYSM_WASM_OPT_BIN=build/lib-test/no-wasm-opt bin/clysm library --shake --wasm-opt tests/lib/one.lisp \
+       -o build/lib-wasm-opt/none/one.wasm > "$log" 2>&1 || ! grep -q 'CLYSM_WASM_OPT_BIN names .*no-wasm-opt, which does not exist' "$log"; then
+    echo 'lib: --wasm-opt without a wasm-opt did not fail saying so'; cat "$log"; exit 1
+  fi
+  if bin/clysm library --shake '--wasm-opt=--no-such-pass' tests/lib/one.lisp -o build/lib-wasm-opt/none/one.wasm > "$log" 2>&1; then
+    node tools/wasm-opt.mjs --find > /dev/null 2>&1 && { echo 'lib: --wasm-opt with arguments wasm-opt refuses did not fail'; exit 1; }
+  fi
+  # (the rest needs Binaryen: the npm package binaryen, or CLYSM_WASM_OPT_BIN)
+  if ! node tools/wasm-opt.mjs --find > /dev/null 2>&1; then
+    echo 'lib: wasm-opt: no Binaryen here, the library through it is not tested'; return 0
+  fi
+  env -u CLYSM_WASM_OPT bin/clysm library --shake tests/lib/wasm-opt.lisp -o build/lib-wasm-opt/plain/wasm-opt.wasm > "$log" 2>&1 \
+    || { cat "$log"; exit 1; }
+  for again in optimised again; do
+    bin/clysm library --shake --wasm-opt tests/lib/wasm-opt.lisp -o build/lib-wasm-opt/$again/wasm-opt.wasm > "$log" 2>&1 \
+      || { cat "$log"; exit 1; }
+  done
+  # the same octets from the same program
+  for f in wasm-opt.wasm wasm-opt.wasm.debug wasm-opt.library.mjs wasm-opt.mjs; do
+    cmp build/lib-wasm-opt/optimised/$f build/lib-wasm-opt/again/$f || { echo "lib: --wasm-opt wrote another $f the second time"; exit 1; }
+  done
+  node tests/lib/wasm-opt.mjs build/lib-wasm-opt/plain/wasm-opt.mjs build/lib-wasm-opt/optimised/wasm-opt.mjs || exit 1
+}
 sections="$sections print-only"
 section_print_only() {
   # the printer without the reader's macro functions

@@ -2187,6 +2187,33 @@ Linux). A deeper computation can run in a worker with the stack it asks for:
 that take and return cloneable values and return promises. A stack overflow
 is a `RangeError` for the caller; the instance stays usable.
 
+`--wasm-opt[=ARGS]` (`bin/clysm library`, `compile`, and `test` of the npm
+package; `CLYSM_WASM_OPT=1` in the environment of `library`) passes the
+compiled module through Binaryen's `wasm-opt` (`-Oz`, or ARGS in its place)
+before the loader is written: after `--shake` and the heap of
+src/preinit.lisp, which are in the module by then, and before its exports
+are read, its debug sections moved and its octets compressed
+(`tools/wasm-opt.mjs`). wasm-opt sees the whole program, copies small
+functions into their callers, merges equal ones and drops what nothing
+reaches; the indices of the functions are other ones afterwards, and what
+names functions by index is written again: every function is given the name
+`f<index>` before, wasm-opt keeps the names (`-g`), and `name` and
+`clysm.sources` are made for the indices those names have after, so a stack
+trace names the Lisp functions with their files and lines as it did
+(`tests/lib/wasm-opt.mjs`; a function copied into its caller has no frame of
+its own, as one the compiler copied). `clysm.image-defaults` is left out and
+`clysm.build` made of the new octets (a heap image saved by the module
+before is not valid for the module after). The features of WebAssembly are
+named one by one (`--mvp-features --enable-gc ...`): with `-all` Binaryen
+writes what engines do not read yet. Clysm does not ship Binaryen: wasm-opt
+is the one `CLYSM_WASM_OPT_BIN` names, else `bin/wasm-opt` of the npm
+package `binaryen` installed beside Clysm or in the working directory's
+project (an optional peer dependency of the npm package), and the build
+fails when there is none. The same program gives the same octets. On
+2026-11-27, with binaryen 132: `tests/lib/wasm-opt.lisp` shaken, 2.20 MB
+→ 1.83 MB, its embedded XZ library 546 kB → 492 kB; 6 s more to build.
+`WASM_OPT=1 tools/run-tests.sh` runs tests/cases through it.
+
 JavaScript modules: `(js:require "typescript")` loads a module with Node.js's
 `require()` (an ES module too, when it does not wait at its toplevel),
 resolved from the working directory; `(js:import "@ruby/prism")` with

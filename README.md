@@ -156,7 +156,10 @@ or, for deep recursion, in a worker (`host/worker.mjs`). Stack traces name
 Lisp functions by file and line. `--shake` leaves out the functions the
 program does not refer to; `--shake-symbols` the symbols too, for a program
 that does not look up by name (`intern`, `find-symbol`, `read`) a symbol its
-code does not refer to (looking one up is then an error). Subprocesses are run with `uiop:run-program` and
+code does not refer to (looking one up is then an error). `--wasm-opt`
+passes the module through Binaryen's `wasm-opt -Oz` when the project has the
+npm package `binaryen` (a tenth less of a shaken library, compressed; stack
+traces name the functions as before). Subprocesses are run with `uiop:run-program` and
 `uiop:launch-program`.
 
 ## Implementation

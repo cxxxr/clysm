@@ -37,8 +37,19 @@ jobs:
             run: NATIVE=1 tools/run-tests.sh
           - name: self-hosted
             run: make selfhost && SELFHOST=1 tools/run-tests.sh && tests/lib/selfhost-names.sh && tests/lib/selfhost-same.sh
+          # (with Binaryen, for --wasm-opt: tests/lib/run.sh skips that of it otherwise)
           - name: library, ASDF, linked heap image, fasls across images, definitions
+            binaryen: true
             run: tools/check-defs.py && make test-lib test-asdf test-link test-fasl-images
+          # modules through wasm-opt (tools/wasm-opt.mjs): shaken, and every
+          # fourth file, since the wasm-opt of the npm package takes 40 s of
+          # a processor for a shaken module (all of them, and not shaken:
+          # WASM_OPT=1 tools/run-tests.sh, an hour and a half of a processor
+          # and more); without the three files that need what --shake leaves
+          # out (they fail with SHAKE=1 alone)
+          - name: compiled and shaken, through wasm-opt
+            binaryen: true
+            run: SHAKE=1 WASM_OPT=1 tools/run-tests.sh $(ls tests/cases/*.lisp | grep -v -e big-structs -e load-batch-ahead -e many-packages | awk 'NR % 4 == 1')
           # the README says Node.js 22 runs everything but JS:AWAIT (and so
           # threads and the npm package), which needs Node.js 24
           - name: compiled, Node.js 22
@@ -50,6 +61,10 @@ jobs:
         with:
           node-version: ${{ matrix.node || 24 }}
       - uses: ./.github/actions/sbcl
+      # (where a project that has Clysm as a package has it: tools/wasm-opt.mjs finds it from there)
+      - name: Install Binaryen
+        if: matrix.binaryen
+        run: npm install --no-save --no-package-lock --no-audit --no-fund binaryen@132.0.0
       - name: Run
         run: ${{ matrix.run }}
       - name: Show the differences
