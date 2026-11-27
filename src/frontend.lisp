@@ -31,6 +31,7 @@
 (defstruct (lvar (:print-function (lambda (v s d) (declare (ignore d))
                                     (format s "#<LVAR ~S>" (lvar-name v)))))
   name owner captured mutated special (refs 0) ignorable
+  (sets 0)      ; how many of REFS are SETQs of it (CHECK-UNUSED: a variable only assigned is not used)
   (type nil)    ; union of the types of its values (types.lisp)
   (decl nil)    ; a declared type specifier (trusted)
   (rep nil)     ; :f64 / :i32 when held unboxed in a local of that type
@@ -712,6 +713,84 @@ where it is used by a (LOCALLY (DECLARE (INLINE FIND-CHUNK)) ...)).")
 
 (defun new-lvar (name &optional special)
   (make-lvar :name name :owner *current-lam* :special special))
+
+;;; Variables never used: with CLYSM_WARN_UNUSED in the environment, a
+;;; lexical variable of a program's code (not of the runtime's) that nothing
+;;; refers to when its binding form has been converted is warned of, as a
+;;; compiler does (SBCL's style warning).  It is told after macroexpansion:
+;;; a variable that a MACROLET's expansion reads is used, and a binding of a
+;;; special variable is not a lexical one.  IGNORE and IGNORABLE declarations
+;;; quiet it; so does a name that is not interned (a macro's GENSYM).
+
+(defvar *warn-unused* nil
+  "True when variables never used are warned of (CLYSM_WARN_UNUSED, read by RESET-COMPILER).")
+
+(defvar *unused-warned* nil
+  "The (source name function) of the warnings of variables never used already
+given: a form converted again (a batch that falls back) is not told twice.")
+
+(defun warn-unused-from-environment ()
+  "Set *WARN-UNUSED* from CLYSM_WARN_UNUSED (set and not empty) and forget the warnings given."
+  (let ((value #+sbcl (sb-ext:posix-getenv "CLYSM_WARN_UNUSED")
+               #-sbcl (sys::%getenv "CLYSM_WARN_UNUSED")))
+    (setf *warn-unused* (and value (plusp (length value)) t)
+          *unused-warned* nil)))
+
+;;; (the toplevel form as it was read: a variable it does not name was
+;;; bound by a macro, which CHECK-UNUSED says)
+(defvar *current-toplevel-form* nil
+  "The toplevel form being compiled as it was read, or NIL (COMPILE-SOURCE-FORMS).")
+
+(defun note-ignored-outer (decls env bound)
+  "IGNORE and IGNORABLE declarations in DECLS of variables of ENV that the
+form does not bind (not in BOUND): as a macro puts a body's declarations in a
+form inside the binding, the variables are not told of either."
+  (dolist (name (declared-ignored decls))
+    (unless (member name bound)
+      (let ((e (env-lookup-var env name)))
+        (when (and e (eq (first e) :var))
+          (setf (lvar-ignorable (third e)) t))))))
+
+(defun lambda-list-names (ll)
+  "The symbols of the lambda list LL that are not lambda list keywords (a superset of the variables it binds)."
+  (let ((names nil))
+    (labels ((walk (x)
+               (cond ((consp x) (walk (car x)) (walk (cdr x)))
+                     ((and x (symbolp x) (not (member x lambda-list-keywords))) (push x names)))))
+      (walk ll))
+    names))
+
+(defun declared-ignored (decls)
+  "The variables DECLS declare IGNORE or IGNORABLE."
+  (loop for d in decls
+        when (and (consp d) (member (car d) '(ignore ignorable)))
+          append (remove-if-not #'symbolp (cdr d))))
+
+(defun enclosing-name ()
+  "The name of the nearest named function being converted, or NIL."
+  (loop for l = *current-lam* then (lam-parent l)
+        while l
+        when (and (lam-name l) (not (and (symbolp (lam-name l)) (null (symbol-package (lam-name l))))))
+          return (lam-name l)))
+
+(defun check-unused (lvars decls)
+  "Warn of each of LVARS, just bound and its scope converted, that nothing refers to."
+  (when (and *warn-unused* *check-declared-integers*)
+    (let ((ignored (declared-ignored decls)))
+      (dolist (lv lvars)
+        (let ((name (and lv (lvar-name lv))))
+          ;; (a variable that is only assigned, as LOOP's destructuring and
+          ;; DESTRUCTURING-BIND's expansions do, is not read either)
+          (when (and lv (= (lvar-refs lv) (lvar-sets lv)) (not (lvar-special lv)) (not (lvar-ignorable lv))
+                     (symbolp name) (symbol-package name)
+                     (not (member name ignored)))
+            (let* ((function (enclosing-name))
+                   (key (list *current-source* name function)))
+              (unless (member key *unused-warned* :test #'equal)
+                (push key *unused-warned*)
+                (cwarn "variable ~S is ~:[never used~;assigned but never read~]~@[ in ~S~]~@[ (~A~]~@[:~D)~]~:[~;, bound by a macro~]"
+                       name (plusp (lvar-sets lv)) function (car *current-source*) (cdr *current-source*)
+                       (and *current-toplevel-form* (not (tree-mentions-p *current-toplevel-form* name))))))))))))
 
 (defun binding-special-p (sym decl-specials)
   (or (member sym decl-specials) (special-var-p sym)))
@@ -1476,6 +1555,7 @@ unboxed (PARAM-CHECK-CODE)."
 (defun convert-lambda (name ll body env &key block-name)
   "Convert a lambda; returns the LAM."
   (multiple-value-bind (decls forms) (parse-body body)
+    (note-ignored-outer decls env (lambda-list-names ll))
     (let* ((pl (parse-lambda-list ll))
            (dspecials (declared-specials decls))
            (lam (make-lam :id (incf *lam-counter*) :name name :parent *current-lam*))
@@ -1526,7 +1606,12 @@ unboxed (PARAM-CHECK-CODE)."
                                                             (mapcar #'first (getf pl :aux)))
                                               env)))
             (setf (lam-safety lam) (and *check-declared-integers* (policy-safety body-env)))
-            (setf (lam-body lam) (convert-body (append (struct-param-checks lam body-env) body-forms) body-env)))
+            (setf (lam-body lam) (convert-body (append (struct-param-checks lam body-env) body-forms) body-env))
+            (check-unused (append (lam-req lam)
+                                  (loop for (lv nil sv) in (lam-opt lam) collect lv collect sv)
+                                  (when (lam-rest lam) (list (lam-rest lam)))
+                                  (loop for (nil lv nil sv) in (lam-keys lam) collect lv collect sv))
+                          decls))
           (when (and *live-mode* clysm-sys::*record-frames* (debug-frames-wanted-p decls))
             (setf (lam-body lam) (add-debug-frame lam (lam-body lam))))))
       lam)))
@@ -1701,6 +1786,7 @@ the system.)"
                       ,(convert-body (cdddr form) env))))))
 
 (defun convert-locally (decls forms env &optional bound)
+  (note-ignored-outer decls env bound)
   (let ((sp (declared-specials decls)))
     (with-notinline-decls (decls)
       (convert-body forms (free-type-decl-env
@@ -1710,6 +1796,7 @@ the system.)"
 
 (defun convert-let (bindings body env)
   (multiple-value-bind (decls forms) (parse-body body :doc-allowed nil)
+    (note-ignored-outer decls env (mapcar (lambda (b) (if (consp b) (car b) b)) bindings))
     (let* ((dspecials (declared-specials decls))
            (inits (loop for b in bindings
                         collect (convert-value (if (consp b)
@@ -1735,7 +1822,9 @@ the system.)"
               (*local-notinline* (local-notinline-after decls)))
           (if (null bindings)
               (convert-body forms new-env)
-              `(:let ,(mapcar #'cons lvars inits) ,(convert-body forms new-env))))))))
+              (let ((body-node (convert-body forms new-env)))
+                (check-unused lvars decls)
+                `(:let ,(mapcar #'cons lvars inits) ,body-node))))))))
 
 (defun convert-let* (bindings body env)
   (if (null bindings)
@@ -1763,7 +1852,9 @@ the system.)"
                                 (lv (new-lvar sym sp))
                                 (new-env (env-extend env (if sp (list :special sym) (list :var sym lv)))))
                            (apply-type-decls decls (list lv))
-                           `(:let ((,lv . ,init)) ,(nest (cdr bs) new-env))))))
+                           (let ((inner (nest (cdr bs) new-env)))
+                             (check-unused (list lv) decls)
+                             `(:let ((,lv . ,init)) ,inner))))))
             (nest bindings env))))))
 
 (defun convert-setq (pairs env)
@@ -1775,6 +1866,7 @@ the system.)"
                   (cond ((and e (eq (first e) :var))
                          (let ((lv (third e)))
                            (note-ref lv)
+                           (incf (lvar-sets lv))
                            (setf (lvar-mutated lv) t)
                            `(:lset ,lv ,(convert-value (checked-value val (lvar-decl lv) env) env))))
                         ((and e (eq (first e) :smacro))
@@ -2151,6 +2243,7 @@ converted so far call (the end of a unit, or of a part of it)."
    (if (and (consp vars) (null (cdr vars)))
     (convert `(let ((,(car vars) ,value-form)) ,@body) env)
     (multiple-value-bind (decls forms) (parse-body body :doc-allowed nil)
+      (note-ignored-outer decls env vars)
       (let* ((dspecials (declared-specials decls))
              (vnode (convert value-form env))
              (lvars (let ((l (loop for v in vars collect (new-lvar v (binding-special-p v dspecials)))))
@@ -2161,7 +2254,9 @@ converted so far call (the end of a unit, or of a part of it)."
                                            collect (if (lvar-special lv) (list :special v) (list :var v lv)))
                                      (loop for s in dspecials unless (member s vars)
                                            collect (list :special s))))))
-        `(:mvbind ,lvars ,vnode ,(convert-body forms (free-type-decl-env decls vars new-env))))))))
+        (let ((body-node (convert-body forms (free-type-decl-env decls vars new-env))))
+          (check-unused lvars decls)
+          `(:mvbind ,lvars ,vnode ,body-node)))))))
 
 (defnative clysm-sys::%with-only-variables (form env)
   ;; (%with-only-variables (var...) form): FORM converted in a lexical
