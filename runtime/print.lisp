@@ -426,6 +426,10 @@ spaces at the end of a line) or contain a newline."
         ((%instancep x) (%write-instance x stream))
         ((arrayp x) (%output-array x stream))
         ((functionp x) (%write-function x stream))
+        ;; (also when not *PRINT-READABLY*: the source forms of a compiled
+        ;; file, compiled again by an image other than the file's)
+        ((and (%packagep x) (package-name x) *fasl-syntax* *read-eval*)
+         (%write-fasl-package x stream))
         ((%packagep x)
          (when *print-readably* (%print-not-readable x))
          (write-string "#<PACKAGE " stream)
@@ -1091,6 +1095,18 @@ value...): a hash table in a compiled file (%WRITE-FASL-HASH-TABLE)."
   (let ((table (make-hash-table :test test :size (max 16 (floor (length entries) 2)))))
     (loop for (k v) on entries by #'cddr do (setf (gethash k table) v))
     table))
+
+(defun %write-fasl-package (package stream)
+  "A package that is a literal object in a compiled file (CLHS 3.2.4.2.2: the
+package of the same name when the file is loaded): read back by #. (fasl
+syntax has *READ-EVAL*)."
+  (write-string "#." stream)
+  (output-object (list '%fasl-package (package-name package)) stream))
+
+(defun %fasl-package (name)
+  "The package NAME of a compiled file (%WRITE-FASL-PACKAGE)."
+  (or (find-package name)
+      (error "package ~A not found (in a compiled file)" name)))
 
 (defun %default-print-instance (x stream)
   (let ((class (%instance-layout x)))

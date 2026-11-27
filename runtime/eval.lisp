@@ -1497,6 +1497,7 @@ effects, so compiling them later sees the same environment.")
 ;;;   I<integer>;               a fixnum
 ;;;   "<n>;<characters>         a simple string
 ;;;   C<character>
+;;;   P<n>;<name>               the package of that name
 ;;;   (<n>;<objects>) or (<n>;<objects>.<object>   a list (dotted)
 ;;;   #<n>;<objects>            a simple vector
 ;;;   R<n>;<text>               another number, or a pathname: read
@@ -1535,6 +1536,7 @@ effects, so compiling them later sees the same environment.")
                                           (dolist (c cells) (remhash c active))
                                           r))))))
                      ((or (numberp x) (pathnamep x)) t)
+                     ((%packagep x) (and (package-name x) (ok-string (package-name x))))
                      (t nil))))
       (unless (and *fasl-symbol-numbers* (walk vector)) (return-from %fasl-bin-encode nil)))
     (let ((labels (make-hash-table :test 'eq)) (nlabels 0)
@@ -1570,6 +1572,7 @@ effects, so compiling them later sees the same environment.")
                          ((fixnump x) (write-char #\I out) (int x))
                          ((characterp x) (write-char #\C out) (write-char x out))
                          ((simple-string-p x) (write-char #\" out) (str x))
+                         ((%packagep x) (write-char #\P out) (str (package-name x)))
                          ((simple-vector-p x)
                           (write-char #\# out) (int (length x))
                           (dotimes (i (length x)) (emit (svref x i))))
@@ -1641,6 +1644,7 @@ effects, so compiling them later sees the same environment.")
                    (#\g (let ((k (int))) (%fasl-gensym k (str))))
                    (#\I (int))
                    (#\" (str))
+                   (#\P (package (int)))
                    (#\C (next))
                    (#\# (let* ((n (int)) (v (make-array n)))
                           (dotimes (i n v) (setf (svref v i) (obj)))))
