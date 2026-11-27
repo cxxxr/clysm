@@ -1109,10 +1109,14 @@ usual settings, without the printer: lists and vectors to a few levels."
                  (cond ((eq pkg *keyword-package*) (write-char #\: out))
                        ((null pkg) (write-string "#:" out))
                        ((eq pkg *package*))
-                       (t (multiple-value-bind (found status) (find-symbol name *package*)
+                       ;; (%FIND-SYMBOL as the printer's %OUTPUT-SYMBOL, not FIND-SYMBOL:
+                       ;; with --shake-symbols the current package may have had a
+                       ;; symbol of this name that was left out, which FIND-SYMBOL
+                       ;; signals, and X is then written with its package)
+                       (t (multiple-value-bind (found status) (%find-symbol name *package*)
                             (unless (and status (eq found x))
                               (%small-write-token (package-name pkg) out)
-                              (write-string (if (eq (nth-value 1 (find-symbol name pkg)) :external) ":" "::")
+                              (write-string (if (eq (nth-value 1 (%find-symbol name pkg)) :external) ":" "::")
                                             out)))))
                  (%small-write-token name out))
                (write-string name out))))

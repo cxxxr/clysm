@@ -8222,7 +8222,11 @@ module: it was compiled with --shake-symbols") when a name not found is
 one of them, instead of making a new symbol that is not the one meant.
 `DEFPACKAGE` makes anew a symbol it exports that was left out, and does
 not import one (`%defpackage-import`); the printer looks up names without
-the check (`%find-symbol`). The module of one export is 43 KB smaller with
+the check (`%find-symbol`), and so does the small printer of the messages
+of errors (`%small-print`, `tests/lib/symbols-message.lisp`: a symbol whose
+name is that of one left out of the current package is written with its
+package, where `find-symbol` made the message `<error while printing
+condition>`). The module of one export is 43 KB smaller with
 it (4,224,522 bytes, 951,011 with `gzip -9`: 3,440 symbols of 5,050 are
 reached from the code the runtime's toplevel forms keep, so it gains more
 as that code goes, issue #30); `tests/lib/symbols.lisp` is a library
