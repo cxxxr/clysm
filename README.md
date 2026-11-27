@@ -76,7 +76,8 @@ expansion reads is used, a binding of a special variable is not told, and
 binding (where a macro puts its body's declarations). A variable that the
 toplevel form does not name was made by a macro, and the warning says so
 (`, bound by a macro`); a macro's own variables (`gensym`) are not told.
-The runtime's code is not looked at. The warnings do not stop the compilation.
+The runtime's code is not looked at. The warnings do not stop the compilation;
+with `CLYSM_WARN_UNUSED=error` it fails after them (`clysm test` then shows them).
 
 Libraries are loaded from an existing Quicklisp installation:
 

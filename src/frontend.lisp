@@ -723,18 +723,28 @@ where it is used by a (LOCALLY (DECLARE (INLINE FIND-CHUNK)) ...)).")
 ;;; quiet it; so does a name that is not interned (a macro's GENSYM).
 
 (defvar *warn-unused* nil
-  "True when variables never used are warned of (CLYSM_WARN_UNUSED, read by RESET-COMPILER).")
+  "True when variables never used are warned of (CLYSM_WARN_UNUSED, read by
+RESET-COMPILER); :ERROR when they are also an error at the end (FAIL-ON-UNUSED).")
 
 (defvar *unused-warned* nil
   "The (source name function) of the warnings of variables never used already
 given: a form converted again (a batch that falls back) is not told twice.")
 
 (defun warn-unused-from-environment ()
-  "Set *WARN-UNUSED* from CLYSM_WARN_UNUSED (set and not empty) and forget the warnings given."
+  "Set *WARN-UNUSED* from CLYSM_WARN_UNUSED (set and not empty; \"error\": :ERROR)
+and forget the warnings given."
   (let ((value #+sbcl (sb-ext:posix-getenv "CLYSM_WARN_UNUSED")
                #-sbcl (sys::%getenv "CLYSM_WARN_UNUSED")))
-    (setf *warn-unused* (and value (plusp (length value)) t)
+    (setf *warn-unused* (cond ((or (null value) (zerop (length value))) nil)
+                              ((string-equal value "error") :error)
+                              (t t))
           *unused-warned* nil)))
+
+(defun fail-on-unused ()
+  "With CLYSM_WARN_UNUSED=error, signal an error when variables never used were told:
+the compilation fails (after all were told)."
+  (when (and (eq *warn-unused* :error) *unused-warned*)
+    (error "~D variable~:P never used (CLYSM_WARN_UNUSED=error)" (length *unused-warned*))))
 
 ;;; (the toplevel form as it was read: a variable it does not name was
 ;;; bound by a macro, which CHECK-UNUSED says)
