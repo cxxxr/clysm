@@ -595,16 +595,24 @@ expansions on the way: a type defined in terms of itself, such as
                   (if (null (cddr args))
                       (let* ((et (if args (car args) '*)) (dims (if (cdr args) (cadr args) '*))
                              (general `(%array-type-match ,x ',et ',dims ,(eq head 'simple-array)))
-                             (code (and (eq head 'simple-array) (equal dims '(*)) (%typep-storage-code et))))
+                             (code (and (eq head 'simple-array) (consp dims) (null (cdr dims))
+                                        (or (eq (car dims) '*) (typep (car dims) '(integer 0)))
+                                        (%typep-storage-code et))))
                         ;; a simple vector of a kind of storage, (SIMPLE-ARRAY
                         ;; (UNSIGNED-BYTE 8) (*)): the kind of the object,
                         ;; one test (the general test finds the element
                         ;; type of the object and compares it with the
-                        ;; type's, 90 ns; an array with a header is left to it)
+                        ;; type's, 90 ns; an array with a header is left to it);
+                        ;; of a length, (SIMPLE-ARRAY (UNSIGNED-BYTE 8) (4)),
+                        ;; then the length of the storage
                         (if code
-                            `(if (%mdarray-p ,x)
-                                 ,general
-                                 ,(if (eql code 4) `(%bytes-p ,x) `(eql (%storage-kind ,x) ,code)))
+                            (let ((kind (if (eql code 4) `(%bytes-p ,x) `(eql (%storage-kind ,x) ,code))))
+                              `(if (%mdarray-p ,x)
+                                   ,general
+                                   ,(if (eq (car dims) '*)
+                                        kind
+                                        `(and ,kind (eql ,(if (eql code 4) `(%bytes-length ,x) `(%storage-length ,x))
+                                                         ,(car dims))))))
                             general))
                       default))
                  ((complex function values base-string simple-base-string) default)

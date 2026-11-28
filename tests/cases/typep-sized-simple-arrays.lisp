@@ -1,0 +1,32 @@
+;; TYPEP of a simple array type of a kind of storage and a length,
+;; (SIMPLE-ARRAY (UNSIGNED-BYTE 8) (4)): the kind and the length of the object
+(defun u8-4 (x) (typep x '(simple-array (unsigned-byte 8) (4))))
+(defun u8-0 (x) (typep x '(simple-array (unsigned-byte 8) (0))))
+(defun t-3 (x) (typep x '(simple-array t (3))))
+(defun ch-2 (x) (typep x '(simple-array character (2))))
+(defun bit-5 (x) (typep x '(simple-array bit (5))))
+(defun df-2 (x) (typep x '(simple-array double-float (2))))
+(defun sf-2 (x) (typep x '(simple-array single-float (2))))
+(defun fx-3 (x) (typep x '(simple-array fixnum (3))))
+(defun s16-1 (x) (typep x '(simple-array (signed-byte 16) (1))))
+(defun u8-* (x) (typep x '(simple-array (unsigned-byte 8) (*))))
+(defparameter *objects*
+  (list (make-array 4 :element-type '(unsigned-byte 8))
+        (make-array 3 :element-type '(unsigned-byte 8))
+        (make-array 0 :element-type '(unsigned-byte 8))
+        (make-array 4 :element-type '(unsigned-byte 8) :fill-pointer 4)
+        (make-array 4 :element-type '(unsigned-byte 8) :adjustable t)
+        (make-array '(2 2) :element-type '(unsigned-byte 8))
+        (make-array 4 :element-type '(signed-byte 8))
+        (make-array 3) (vector 1 2) (make-array 3 :adjustable t)
+        "ab" "abc" (make-array 2 :element-type 'character :fill-pointer 2)
+        (make-array 5 :element-type 'bit) #*1010
+        (make-array 2 :element-type 'double-float) (make-array 2 :element-type 'single-float)
+        (make-array 3 :element-type 'fixnum) (make-array 1 :element-type '(signed-byte 16))
+        (list 1 2 3) 42 nil 'abcd 1.5))
+(dolist (f (list #'u8-4 #'u8-0 #'t-3 #'ch-2 #'bit-5 #'df-2 #'sf-2 #'fx-3 #'s16-1 #'u8-*))
+  (print (mapcar (lambda (x) (if (funcall f x) 1 0)) *objects*)))
+;; the same types given at run time
+(dolist (ty '((simple-array (unsigned-byte 8) (4)) (simple-array t (3))
+              (simple-array character (2)) (simple-array bit (5))))
+  (print (mapcar (lambda (x) (if (typep x ty) 1 0)) *objects*)))
