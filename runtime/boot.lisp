@@ -678,8 +678,14 @@ variable, so it may be evaluated after a variable is read."
     (values temps vals stores `(values ,@setters) `(values ,@getters))))
 
 (define-setf-expander the (type place &environment env)
-  (declare (ignore type))
-  (%get-setf-expansion place env))
+  ;; the assertion is of the new value (CLHS THE) and of the value read by
+  ;; a read-modify-write macro
+  (multiple-value-bind (temps vals stores setter getter) (%get-setf-expansion place env)
+    (values temps vals stores
+            (if (and stores (null (cdr stores)))
+                `(let ((,(car stores) (the ,type ,(car stores)))) ,setter)
+                `(multiple-value-bind ,stores (the ,type (values ,@stores)) ,setter))
+            `(the ,type ,getter))))
 
 (define-setf-expander apply (fn &rest args)
   (let ((temps (mapcar (lambda (x) (declare (ignore x)) (gensym)) args))
