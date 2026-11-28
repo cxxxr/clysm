@@ -44,3 +44,22 @@
                 (js:throw (js:get-raw (js:global) "__clysm_entry_sentinel") :message "initializer failed"))
               :entry "checked-throwing"
               :load-errors '(("ENOENT" "must not replace an initializer error")))
+
+;; Lazy imports: imported with import() on the first JS:MODULE, not with the entry.
+(js:export "lazyValue" (lambda () (js:get (js:module "./lazy-dep.mjs") "value"))
+           :async t :entry "lazy-imports")
+(js:export "lazyDefault" (lambda () (js:get (js:module "./lazy-default.mjs") "value"))
+           :async t :entry "lazy-imports")
+(js:export "lazyNow"
+           (lambda ()
+             (handler-case (js:get (js:module "./lazy-dep.mjs") "value")
+               (error (e) (princ-to-string e))))
+           :entry "lazy-imports")
+(js:entrypoint (lambda (context)
+                (declare (ignore context))
+                (incf *starts*)
+                (js:set (js:global) "__clysm_entry_lazy_basename"
+                        (js:call (js:module "node:path") "basename" "/a/c")))
+              :entry "lazy-imports"
+              :imports '(("./lazy-dep.mjs" "*" :lazy) ("./lazy-default.mjs" "default" :lazy)
+                         ("node:path" "default")))

@@ -2291,7 +2291,19 @@ JavaScript written for it (`tests/lib/package.lisp`):
   JavaScript expression is accepted. An omitted predicate always runs.
   `:imports '(("typescript" "default") ("node:fs" "*"))` adds static ES
   imports to the entry's generated `.entry.mjs` helper and provides them
-  through `JS:MODULE`. Imports must be registered before the library loads;
+  through `JS:MODULE`. A third element `:lazy`
+  (`("@scope/sdk" "*" :lazy)`) imports that module on its first use
+  instead: the helper gives it as `() => import("@scope/sdk")` (with the
+  selected export taken from the namespace), a literal specifier that a
+  bundler such as esbuild still sees and bundles, and the module is not
+  evaluated when the entry is imported. The first `JS:MODULE` of it waits
+  for the import with `JS:AWAIT`, so it is called where `JS:CAN-AWAIT-P` is
+  true (in a function of `JS:ASYNC-FUNCTION`, or an export of `:async t`);
+  elsewhere it signals an error that says so. The module is kept, and later
+  calls return it at once, also where nothing can wait. (A module whose
+  evaluation is costly or changes globals, as an SDK that makes
+  `String.prototype` slow, is thus loaded only by the runs that use it.)
+  Imports must be registered before the library loads;
   explicit `useLibrary` modules take precedence. `:environment '("SERVER")`
   captures literal `process.env.SERVER`, allowing a bundler's define to
   replace it. `:shebang t` makes a Node executable entry. `:errors :stderr`

@@ -9,7 +9,7 @@ const url = (name) => pathToFileURL(path.join(dir, name)).href;
 const wasm = path.join(dir, 'entrypoints.wasm');
 if (!mode) {
   const embedded = fs.readFileSync(path.join(dir, 'entrypoints.library.mjs'), 'utf8').includes('bytesOfBase64');
-  for (const next of ['lazy', 'worker', 'cli', 'override', 'late', 'throwing', 'check-pass', 'check-fail', 'check-skip', 'check-throw', ...(embedded ? [] : ['failure', 'check-load'])]) {
+  for (const next of ['lazy', 'worker', 'cli', 'override', 'late', 'throwing', 'check-pass', 'check-fail', 'check-skip', 'check-throw', 'lazy-imports', 'lazy-bundle', ...(embedded ? [] : ['failure', 'check-load'])]) {
     const result = spawnSync(process.execPath, [import.meta.filename, dir, next], { encoding: 'utf8' });
     assert.equal(result.status, ['failure', 'check-fail', 'check-load'].includes(next) ? 1 : 0, `${next}: ${result.stdout}\n${result.stderr}`);
     if (next === 'failure') {
@@ -24,6 +24,12 @@ if (!mode) {
   assert.match(fs.readFileSync(path.join(dir, 'cli.mjs'), 'utf8'), /^#!\/usr\/bin\/env node\n/);
   assert.ok(fs.statSync(path.join(dir, 'cli.mjs')).mode & 0o111);
   assert.match(fs.readFileSync(path.join(dir, 'cli.entry.mjs'), 'utf8'), /process\.env\.CLYSM_ENTRY_VALUE/);
+  // a lazy import stays a literal import() that a bundler sees, and is not a static import
+  const lazyEntry = fs.readFileSync(path.join(dir, 'lazy-imports.entry.mjs'), 'utf8');
+  assert.match(lazyEntry, /import\("\.\/lazy-dep\.mjs"\)/);
+  assert.match(lazyEntry, /import\("\.\/lazy-default\.mjs"\)\.then\(\(m\) => m\["default"\]\)/);
+  assert.doesNotMatch(lazyEntry, /from "\.\/lazy-/);
+  assert.match(lazyEntry, /import \* as __clysm_entry_module2 from "node:path";/);
   console.log('lib: generated entry initializers ok');
 } else if (mode === 'lazy') {
   delete process.env.CLYSM_ENTRY_FLAG;
@@ -63,6 +69,41 @@ if (!mode) {
   assert.equal(status().cli.environment.CLYSM_ENTRY_VALUE, 'the deployment');
   assert.equal(status().cli.environment.CLYSM_ENTRY_UNSET, undefined);
   assert.equal(globalThis.__clysm_entry_cli.platform, process.platform);
+} else if (mode === 'lazy-imports' || mode === 'lazy-bundle') {
+  // ./lazy-dep.mjs and ./lazy-default.mjs count their evaluations
+  const dependency = (file, text) => fs.writeFileSync(path.join(dir, file),
+    `globalThis.__clysm_lazy_evaluated = [...(globalThis.__clysm_lazy_evaluated ?? []), ${JSON.stringify(file)}];\n${text}\n`);
+  dependency('lazy-dep.mjs', 'export const value = 41;');
+  dependency('lazy-default.mjs', 'export default { value: 5 };');
+  let entry = url('lazy-imports.mjs');
+  if (mode === 'lazy-bundle') {
+    // in one file made by esbuild (when it is installed), without the files beside it:
+    // the lazy modules are in the bundle and evaluated on their first use all the same
+    let esbuild;
+    try { esbuild = await import(process.env.CLYSM_ESBUILD ? pathToFileURL(process.env.CLYSM_ESBUILD).href : 'esbuild'); }
+    catch { process.exit(0); }
+    const out = path.join(dir, 'bundle');
+    fs.rmSync(out, { recursive: true, force: true });
+    fs.mkdirSync(out);
+    if (fs.existsSync(wasm)) fs.copyFileSync(wasm, path.join(out, 'entrypoints.wasm'));
+    await (esbuild.build ?? esbuild.default.build)({ entryPoints: [path.join(dir, 'lazy-imports.mjs')], bundle: true,
+      format: 'esm', platform: 'node', outfile: path.join(out, 'lazy-imports.mjs'), logLevel: 'error' });
+    const text = fs.readFileSync(path.join(out, 'lazy-imports.mjs'), 'utf8');
+    assert.match(text, /export const value = 41|value = 41/);
+    entry = pathToFileURL(path.join(out, 'lazy-imports.mjs')).href;
+  }
+  const lazy = await import(entry);
+  assert.equal(globalThis.__clysm_entry_lazy_basename, 'c');
+  assert.equal(globalThis.__clysm_lazy_evaluated, undefined);
+  assert.match(lazy.lazyNow(), /lazily \(:LAZY\).*JS:CAN-AWAIT-P is false/s);
+  assert.equal(globalThis.__clysm_lazy_evaluated, undefined);
+  assert.equal(await lazy.lazyValue(), 41);
+  assert.deepEqual(globalThis.__clysm_lazy_evaluated, ['lazy-dep.mjs']);
+  assert.equal(await lazy.lazyValue(), 41);
+  // once imported, it is there at once, also where nothing can wait
+  assert.equal(lazy.lazyNow(), 41);
+  assert.equal(await lazy.lazyDefault(), 5);
+  assert.deepEqual(globalThis.__clysm_lazy_evaluated, ['lazy-dep.mjs', 'lazy-default.mjs']);
 } else if (mode === 'late') {
   (await import(url('api.mjs'))).status();
   // The CLI error policy reports the late imports, without replacing the

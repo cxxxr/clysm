@@ -43,6 +43,20 @@ const implementation = Symbol.for('clysm.class');
 // export of the library may be named JSON or process.
 export const jsonConstant = (text) => JSON.parse(text);
 export const writeToStderr = (text) => process.stderr.write(text);
+// A module of JS:ENTRYPOINT's :imports marked :lazy: LOAD (a function that calls import())
+// runs on the first JS:MODULE of it, which waits for it; the value is kept from then on.
+export function lazyModule(load) {
+  const lazy = {
+    clysmLazyModule: true, loaded: false, value: undefined, promise: null,
+    load() {
+      lazy.promise ??= Promise.resolve().then(load).then(
+        (value) => { lazy.loaded = true; lazy.value = value; return null; },
+        (error) => { lazy.promise = null; throw error; });
+      return lazy.promise;
+    },
+  };
+  return lazy;
+}
 
 export function makeClass(spec, load = null, classes = {}) {
   // (a name of a class of JavaScript: the registries are objects whose keys are the names)
