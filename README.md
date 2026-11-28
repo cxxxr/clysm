@@ -13,10 +13,12 @@ $ bin/clysm eval '(expt 2 100)'
 1267650600228229401496703205376
 ```
 
-Demo: [Lem running in the browser](https://cxxxr.github.io/lem/) (from
-[cxxxr/lem](https://github.com/cxxxr/lem), `frontends/clysm/`). Lem, its
-libraries and the compiler are all compiled by Clysm; the page needs no
-server. It needs Chrome or Edge 137 or later and is about 22 MB.
+Try it in the [playground](https://cxxxr.github.io/clysm/): sample
+programs and a REPL, compiled to WebAssembly in the page (`site/`, about
+9 MB). A larger program: [Lem running in the browser](https://cxxxr.github.io/lem/)
+(from [cxxxr/lem](https://github.com/cxxxr/lem), `frontends/clysm/`). Lem,
+its libraries and the compiler are all compiled by Clysm; the page needs no
+server and is about 22 MB. Both need Chrome or Edge 137 or later.
 
 ## State
 
@@ -64,6 +66,7 @@ $ bin/clysm script file.lisp              # LOAD a file in the REPL image
 $ bin/clysm eval '(expt 2 100)'           # evaluate a form in the REPL image
 $ bin/clysm test --system my-tests t/*.lisp   # test programs, in parallel (--watch)
 $ make web                                # the REPL in a browser page, in build/web/
+$ make site                               # the playground, in build/site/ (tests/site/samples.mjs runs its samples)
 $ make npm                                # an npm package that needs only Node.js (no SBCL)
 ```
 
