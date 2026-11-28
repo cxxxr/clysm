@@ -329,11 +329,43 @@
         (when (eq cat :unknown) (return-from %member-type :unknown))
         (setq r (%type-or r (list (cons cat c))))))))
 
+(defun %upgrade-by-canon (et)
+  "The upgraded array element type of ET told by the categories of its
+canonical form, or :UNKNOWN when ET cannot be represented.  (One %CANON of ET,
+where %UPGRADE-ELEMENT-TYPE-1 asks SUBTYPEP of ET and each element type of a
+kind of storage in turn.)"
+  (let ((c (%canon et)) (cats nil) (lo nil) (hi nil) (bounded t))
+    (when (eq c :unknown) (return-from %upgrade-by-canon :unknown))
+    (dolist (e c)
+      (unless (%cat-empty-p (car e) (cdr e))
+        (if (eq (car e) 'integer)
+            ;; the least and the greatest integer of its intervals
+            (let ((ivs nil))
+              (dolist (iv (cdr e)) (setq ivs (append ivs (%iv-normalize-int iv))))
+              (when ivs
+                (push 'integer cats)
+                (dolist (iv ivs)
+                  (let ((l (first iv)) (h (third iv)))
+                    (if (and l h)
+                        (setq lo (if lo (min lo l) l) hi (if hi (max hi h) h))
+                        (setq bounded nil))))))
+            (push (car e) cats))))
+    (flet ((within (names) (every (lambda (cat) (member cat names)) cats)))
+      (cond ((null cats) nil)
+            ((within '(base-char extended-char)) 'character)
+            ((within '(integer)) (if bounded (%int-element-type lo hi) t))
+            ((within '(single-float single-float-negzero)) 'single-float)
+            ((within '(double-float double-float-negzero)) 'double-float)
+            (t t)))))
+
 (defun %element-categories (et)
   "The array element categories denoted by the element type ET."
   (if (eq et '*)
       *array-element-categories*
-      (let ((u (upgraded-array-element-type et)))
+      ;; (an element type of a kind of storage written as such is its own
+      ;; upgrade)
+      (let ((u (if (member et '(t character bit single-float double-float)) et (%upgrade-by-canon et))))
+        (when (eq u :unknown) (setq u (upgraded-array-element-type et)))
         (list (if (member u *array-element-categories* :test #'equal) u t)))))
 
 (defun %array-type (et dims simple-only)
