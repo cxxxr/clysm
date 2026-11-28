@@ -5,7 +5,8 @@
   (js:entrypoint (lambda (context) (declare (ignore context)))
                 :entry (if (equal mode "name") "../outside" "start")
                 :when condition
-                :imports (when (equal mode "imports") '(("node:path" "bad-name")))
+                :imports (cond ((equal mode "imports") '(("node:path" "bad-name")))
+                               ((equal mode "lazy") '(("node:path" "*" :later))))
                 :checks (cond ((equal mode "checks") '((t)))
                               ((equal mode "message") '((t (:source "not code")))))
                 :load-errors (cond ((equal mode "load-errors") '(("ENOENT" 1)))

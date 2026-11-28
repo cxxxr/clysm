@@ -527,11 +527,23 @@ Signals an error if one is rejected."
 
 (defun js:module (name)
   "The JavaScript module that the host was given as NAME (the modules option
-of host/lib.mjs).  Signals an error if there is none."
+of host/lib.mjs).  Signals an error if there is none.  A module that
+JS:ENTRYPOINT imports lazily (:LAZY in its :IMPORTS) is imported on the first
+call, which waits for it with JS:AWAIT (so that call is made where
+JS:CAN-AWAIT-P is true); later calls return it at once."
   (let ((m (%js-get (%js-host 0) (js:to-js name))))
     (when (member (%js-typeof m) '(0 1))
       (error "No JavaScript module ~S was given to the host" name))
-    m))
+    (if (and (eql (%js-typeof m) 5) (eq (js:get m "clysmLazyModule") t))
+        (%js-lazy-module m name)
+        m)))
+
+(defun %js-lazy-module (m name)
+  (unless (eq (js:get m "loaded") t)
+    (unless (js:can-await-p)
+      (error "JS:MODULE cannot import the module ~S here: JS:ENTRYPOINT imports it lazily (:LAZY), and its first use waits with JS:AWAIT, which cannot wait here (JS:CAN-AWAIT-P is false: call it first in a function of JS:ASYNC-FUNCTION, or import it without :LAZY)" name))
+    (js:await-raw (js:call m "load")))
+  (%js-get m (js:to-js "value")))
 
 (defun js:require (specifier)
   "The JavaScript module SPECIFIER loaded with Node.js's require(), found
@@ -658,6 +670,8 @@ It runs on importing that generated entry, not while generating it. The
 function receives its entry context (url, environment and imported modules).
 WHEN is a declarative predicate over globals, evaluated before loading Wasm.
 IMPORTS lists (module-specifier export-name) pairs; \"*\" means the namespace.
+An entry (module-specifier export-name :LAZY) is imported with import() on
+its first JS:MODULE, which waits for it, instead of when the entry is.
 ENVIRONMENT lists process.env names to capture in generated source, allowing
 a bundler to replace them. SHEBANG emits a Node executable header. ERRORS may
 be :STDERR to report a synchronous startup failure and set process.exitCode.
@@ -674,7 +688,7 @@ translate only failures of loading the library, not the initializer itself."
     (js:call entries "push"
              (js:object "entry" entry "run" function
                         "condition" (if condition-p (%js-entry-expression condition) t)
-                        "imports" (map 'vector (lambda (spec) (coerce spec 'vector)) imports)
+                        "imports" (map 'vector #'%js-entry-expression imports)
                         "environment" (coerce environment 'vector)
                         "shebang" (if shebang t :false)
                         "errors" (if errors "stderr" :null)

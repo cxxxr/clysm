@@ -196,11 +196,11 @@ for (const spec of entrypoints) {
   if (!info.options?.lazy || typeof spec.entry !== 'string' || typeof spec.run !== 'function')
     throw new Error('JS:ENTRYPOINT needs a named entry and a function in a lazy library');
   if (entryInitializers.has(spec.entry)) throw new Error(`the entry ${spec.entry} has more than one initializer`);
-  if (!Array.isArray(spec.imports) || spec.imports.some((i) => !Array.isArray(i) || i.length !== 2
+  if (!Array.isArray(spec.imports) || spec.imports.some((i) => !Array.isArray(i) || ![2, 3].includes(i.length)
       || typeof i[0] !== 'string' || !i[0].length || typeof i[1] !== 'string'
-      || (i[1] !== '*' && !identifier.test(i[1])))
+      || (i[1] !== '*' && !identifier.test(i[1])) || (i.length === 3 && i[2] !== 'lazy'))
       || new Set(spec.imports.map((i) => i[0])).size !== spec.imports.length)
-    throw new Error('JS:ENTRYPOINT imports need unique module specifiers and export names (or *)');
+    throw new Error('JS:ENTRYPOINT imports need unique module specifiers and export names (or *), and :LAZY or nothing after them');
   if (!Array.isArray(spec.environment) || spec.environment.some((v) => typeof v !== 'string' || !identifier.test(v))
       || new Set(spec.environment).size !== spec.environment.length)
     throw new Error('JS:ENTRYPOINT environment names must be unique identifiers');
@@ -404,8 +404,15 @@ import { jsonConstant as __clysm_json } from './clysm/jsffi.mjs';
 ${lines.join('\n')}
 `);
     if (init) {
-      const imported = init.imports.map(([specifier], i) => `import * as __clysm_entry_module${i} from ${JSON.stringify(specifier)};`).join('\n');
-      const modules = init.imports.map(([specifier, selected], i) => `[${JSON.stringify(specifier)}]: __clysm_entry_module${i}${selected === '*' ? '' : `[${JSON.stringify(selected)}]`}`).join(', ');
+      // A lazy import stays a literal import() (which a bundler sees and bundles), called
+      // on the first JS:MODULE of it: the module is not evaluated before.
+      const lazyImports = init.imports.some((i) => i[2] === 'lazy');
+      const imported = [...init.imports.flatMap(([specifier, , lazy], i) => lazy ? [] : [`import * as __clysm_entry_module${i} from ${JSON.stringify(specifier)};`]),
+        ...(lazyImports ? ["import { lazyModule as __clysm_lazy_module } from './clysm/jsffi.mjs';"] : [])].join('\n');
+      const selection = (selected) => selected === '*' ? '' : `[${JSON.stringify(selected)}]`;
+      const modules = init.imports.map(([specifier, selected, lazy], i) => `[${JSON.stringify(specifier)}]: ${lazy
+        ? `__clysm_lazy_module(() => import(${JSON.stringify(specifier)})${selected === '*' ? '' : `.then((m) => m${selection(selected)})`})`
+        : `__clysm_entry_module${i}${selection(selected)}`}`).join(', ');
       const environment = init.environment.map((v) => `[${JSON.stringify(v)}]: process.env.${v}`).join(', ');
       const checks = init.checks.map(([condition, message]) => `if (!(${entryCondition(condition)})) throw new Error(${entryMessage(message)});`).join('\n');
       const load = init.loadErrors.length ? `let __clysm_loaded;

@@ -5,6 +5,7 @@ for (const [mode, expected] of [
   ['name', /is no name of a module/],
   ['condition', /invalid JS:ENTRYPOINT condition operator/],
   ['imports', /imports need unique module specifiers/],
+  ['lazy', /and :LAZY or nothing after them/],
   ['environment', /environment names must be unique identifiers/],
   ['checks', /checks need predicate\/message pairs/],
   ['message', /invalid JS:ENTRYPOINT check message/],
