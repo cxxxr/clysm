@@ -148,6 +148,12 @@ assert.match(dts, /export declare class Widget \{\n  constructor\(\.\.\.args: an
 assert.deepEqual(lib.kinds(undefined, null, false, 0, 's', {}, () => 1),
                  ['undefined', 'null', 'boolean', 'number', 'string', 'object', 'function']);
 assert.equal(lib.indexIn('a'.repeat(100000) + 'needle', 'needle'), 100000);
+for (const text of ['', 'a\uD800b', 'x\uDC00\uD83D\uDE00\uFFFF'.repeat(40) + '\uD800', 'é'.repeat(70000)]) {
+  // (a pair of surrogates is one character of Lisp, a lone one a character of its own)
+  const codes = Array.from(text, (c) => c.codePointAt(0));
+  assert.deepEqual(Array.from(lib.codes(text)), codes);
+  assert.equal(lib.reversed(text), String.fromCodePoint(...codes.reverse()));
+}
 for (const v of [undefined, null, false, 0, '', 'text']) assert.equal(lib.identity(v), v);
 const o = {};
 assert.equal(lib.identity(o), o);

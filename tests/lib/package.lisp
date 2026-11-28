@@ -116,6 +116,10 @@ export type Places = Place[];" :entry "places")
 (js:export "lib" "a constant named lib" :entry "places" :type "string")
 ;; written to the standard output: on the standard error, with :output :error
 (js:export "say" (lambda (text) (write-line text) (finish-output) nil) :type "(text: string) => null")
+;; a string into Lisp and back: short and long strings cross
+;; by different paths (host/jsffi.mjs str_to_mem), lone surrogates kept
+(js:export "codes" (lambda (text) (map 'vector #'char-code text)) :type "(text: string) => number[]")
+(js:export "reversed" (lambda (text) (reverse text)) :type "(text: string) => string")
 
 ;; Arguments as JavaScript has them (:RAW): undefined, null and false told apart, a string read
 ;; where it is, a value handed back as it came.

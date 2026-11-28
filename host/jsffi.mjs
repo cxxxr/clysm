@@ -103,6 +103,9 @@ function defineClass(spec, functions, library) {
 globalThis.__clysm_define_class ??= defineClass;
 
 const utf16 = new TextDecoder('utf-16le', { ignoreBOM: true });
+// Node's Buffer, if this host has it (not in a browser)
+const NodeBuffer = typeof globalThis.Buffer === 'function' && typeof globalThis.Buffer.from === 'function'
+  ? globalThis.Buffer : null;
 
 // The functions of JavaScript that the runtime calls (runtime/js.lisp, misc.lisp,
 // thread.lisp, process.lisp), by name: (%js-helper "name").  They are written
@@ -321,7 +324,16 @@ export function makeJsImports(state) {
       str_to_mem: (x) => {
         const s = String(x);
         const n = s.length;
-        const units = new Uint16Array(ensure(n * 2), 0, n);
+        const buffer = ensure(n * 2);
+        // Node's Buffer copies the code units at once (lone surrogates kept);
+        // a loop of charCodeAt costs several times more, and far more once a
+        // library has put String.prototype out of V8's fast mode (smithy's
+        // StringWrapper does)
+        if (n >= 64 && NodeBuffer) {
+          NodeBuffer.from(buffer, 0, n * 2).write(s, 0, n * 2, 'utf16le');
+          return n;
+        }
+        const units = new Uint16Array(buffer, 0, n);
         for (let i = 0; i < n; i++) units[i] = s.charCodeAt(i);
         return n;
       },
