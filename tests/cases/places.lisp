@@ -83,3 +83,16 @@
   (incf (aref v (incf cnt)))
   (print (list cnt v)))
 (terpri)
+
+;; (SETF (THE type place) value) asserts the type of the value (CLHS THE);
+;; a read-modify-write macro also asserts it of the value read
+(defun the-setf-check (fn)
+  (handler-case (list :ok (funcall fn))
+    (type-error (e) (list :type-error (type-error-datum e)))))
+(print (let ((x 1)) (the-setf-check (lambda () (setf (the fixnum x) "a")))))
+(print (let ((x 1)) (list (the-setf-check (lambda () (setf (the fixnum x) 5))) x)))
+(print (let ((x "s")) (the-setf-check (lambda () (incf (the fixnum x) 1)))))
+(print (let ((x 1.0)) (list (incf (the single-float x) 2.0) x)))
+(print (let ((v (vector 1 2))) (list (incf (the fixnum (aref v 0)) 10) v)))
+(print (let ((a 1) (b 2))
+         (list (setf (the (values fixnum fixnum) (values a b)) (values 3 4)) a b)))
