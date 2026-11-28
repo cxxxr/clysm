@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clysm Playground</title>
+<meta name="description" content="Common Lisp compiled to WebAssembly GC in your browser.">
+<style>
+  :root {
+    --bg: #f7f6f2; --panel: #ffffff; --fg: #1d1d1f; --muted: #6b6b70; --line: #e2e0d9;
+    --accent: #2f5d8a; --accent-fg: #ffffff; --value: #1f6b4f; --error: #b3261e;
+    --tok-comment: #8a8a80; --tok-string: #a3561b; --tok-keyword: #7a3e9d; --tok-number: #1f6b4f;
+    --tok-special: #2f5d8a; --tok-name: #9c2f55; --tok-paren: #9a9890; --tok-quote: #b3261e;
+    --select: #cfe0f3;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151618; --panel: #1d1e21; --fg: #e8e6e1; --muted: #9a9a9f; --line: #303136;
+      --accent: #7fb0e0; --accent-fg: #10243a; --value: #8fd1a8; --error: #f2948a;
+      --tok-comment: #7d7d78; --tok-string: #e0a370; --tok-keyword: #c79be6; --tok-number: #8fd1a8;
+      --tok-special: #7fb0e0; --tok-name: #ee8fb0; --tok-paren: #6c6b66; --tok-quote: #f2948a;
+      --select: #2c4560;
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  a { color: var(--accent); }
+  code, pre, textarea, .out, .repl label { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+  .page { max-width: 1280px; height: 100vh; height: 100dvh; margin: 0 auto; padding: 20px 16px 16px; display: flex; flex-direction: column; gap: 14px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; }
+  header h1 { margin: 0; font-size: 22px; letter-spacing: -0.01em; }
+  header p { margin: 0; color: var(--muted); flex: 1 1 320px; }
+  header nav { display: flex; gap: 14px; font-size: 14px; }
+
+  .samples { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: thin; }
+  .samples button { flex: none; font: inherit; font-size: 13px; padding: 4px 11px; border-radius: 999px; cursor: pointer;
+                    border: 1px solid var(--line); background: var(--panel); color: var(--fg); }
+  .samples button:hover { border-color: var(--accent); }
+  .samples button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+
+  .work { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 14px; }
+  .pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--panel);
+          border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .pane-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px 8px 14px; border-bottom: 1px solid var(--line); min-height: 44px; }
+  .pane-head .title { font-weight: 600; font-size: 14px; }
+  .pane-head .spacer { flex: 1; }
+  .pane-head button { font: inherit; font-size: 13px; padding: 4px 12px; border-radius: 6px; cursor: pointer;
+                      border: 1px solid var(--line); background: transparent; color: var(--fg); }
+  .pane-head button:hover:not(:disabled) { border-color: var(--accent); }
+  .pane-head button:disabled { opacity: .45; cursor: default; }
+  .pane-head button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
+  .pane-head kbd { font: 11px ui-monospace, monospace; opacity: .75; margin-left: 4px; }
+  .note { margin: 0; padding: 10px 14px; font-size: 13.5px; color: var(--muted); border-bottom: 1px solid var(--line); }
+
+  .editor { position: relative; flex: 1; min-height: 0; }
+  .editor pre, .editor textarea {
+    position: absolute; inset: 0; margin: 0; padding: 12px 14px; border: 0; overflow: auto;
+    font-size: 13.5px; line-height: 1.55; tab-size: 2; white-space: pre; overflow-wrap: normal; }
+  .editor pre { pointer-events: none; color: var(--fg); }
+  .editor textarea { resize: none; outline: none; background: transparent; color: transparent; caret-color: var(--fg); }
+  .editor textarea::selection { background: var(--select); color: transparent; }
+  .t-comment { color: var(--tok-comment); font-style: italic; }
+  .t-string { color: var(--tok-string); }
+  .t-keyword { color: var(--tok-keyword); }
+  .t-number { color: var(--tok-number); }
+  .t-special { color: var(--tok-special); font-weight: 600; }
+  .t-name { color: var(--tok-name); }
+  .t-paren { color: var(--tok-paren); }
+  .t-quote { color: var(--tok-quote); }
+
+  .out { flex: 1; min-height: 0; overflow: auto; padding: 10px 14px; font-size: 13.5px; line-height: 1.5; }
+  .out canvas { display: block; width: 100%; max-width: 480px; aspect-ratio: 3 / 2; border-radius: 6px; margin: 4px 0 10px; background: #0001; }
+  .entry { margin: 0 0 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .entry .head { color: var(--muted); }
+  .entry .head.input { color: var(--accent); }
+  .entry .stdout { color: var(--fg); }
+  .entry .stderr { color: var(--error); }
+  .entry .values { color: var(--value); }
+  .entry .error { color: var(--error); }
+  .entry .meta { color: var(--muted); font-size: 12px; }
+  .info { color: var(--muted); }
+
+  .repl { display: flex; align-items: flex-start; gap: 8px; padding: 8px 14px; border-top: 1px solid var(--line); }
+  .repl label { color: var(--accent); white-space: pre; font-size: 13.5px; line-height: 1.5; padding-top: 1px; }
+  .repl textarea { flex: 1; border: 0; outline: 0; resize: none; overflow: hidden; padding: 0; margin: 0; background: transparent;
+                   color: var(--fg); font-size: 13.5px; line-height: 1.5; min-height: 1.5em; }
+  .repl textarea:disabled { opacity: .5; }
+
+  footer { color: var(--muted); font-size: 13px; display: flex; flex-wrap: wrap; gap: 4px 18px; }
+  footer p { margin: 0; }
+
+  @media (max-width: 860px), (max-height: 560px) {
+    .page { height: auto; min-height: 100%; }
+    .work { grid-template-columns: minmax(0, 1fr); }
+    .editor { min-height: 52vh; }
+    .out { min-height: 200px; max-height: 70vh; }
+  }
+  @media (max-width: 480px) {
+    .pane-head kbd { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <h1>Clysm</h1>
+    <p>Common Lisp compiled to WebAssembly GC. The compiler runs in this page: each form you run is compiled to a WebAssembly module and linked with the running image.</p>
+    <nav>
+      <a href="https://github.com/cxxxr/clysm">GitHub</a>
+      <a href="https://github.com/cxxxr/clysm#readme">README</a>
+      <a href="https://cxxxr.github.io/lem/">Lem in the browser</a>
+    </nav>
+  </header>
+
+  <div class="samples" id="samples" role="toolbar" aria-label="Samples"></div>
+
+  <main class="work">
+    <section class="pane" aria-label="Program">
+      <div class="pane-head">
+        <span class="title" id="sample-title">Program</span>
+        <span class="spacer"></span>
+        <button id="share" title="Copy a link to this program">Share</button>
+        <button id="run" class="primary" disabled>Run<kbd>Ctrl+Enter</kbd></button>
+      </div>
+      <p class="note" id="sample-note"></p>
+      <div class="editor">
+        <pre id="highlight" aria-hidden="true"></pre>
+        <textarea id="code" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="Lisp program"></textarea>
+      </div>
+    </section>
+
+    <section class="pane" aria-label="Output">
+      <div class="pane-head">
+        <span class="title">Output</span>
+        <span class="spacer"></span>
+        <span class="info" id="status">Loading…</span>
+        <button id="stop" disabled title="End the computation (starts a new image)">Stop</button>
+        <button id="clear" title="Clear the output">Clear</button>
+      </div>
+      <div class="out" id="out"></div>
+      <div class="repl">
+        <label for="repl" id="prompt">CL-USER&gt;</label>
+        <textarea id="repl" rows="1" spellcheck="false" autocomplete="off" autocapitalize="off" disabled
+                  placeholder="Type a form and press Enter"></textarea>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <p>Everything runs in your browser; the image with the compiler is about 9 MB. It needs Chrome or Edge 137 or later (WebAssembly GC, tail calls and exception handling with exnref).</p>
+  </footer>
+</div>
+<script type="module" src="playground.mjs"></script>
+</body>
+</html>

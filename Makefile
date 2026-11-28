@@ -1,5 +1,5 @@
 # Clysm — Common Lisp on WebAssembly GC
-.PHONY: all test test-all test-link test-fasl-images test-lib test-static test-system test-downstream npm test-ui test-asdf test-quicklisp test-mcclim test-swank test-threads repl selfhost fixpoint web ansi clean
+.PHONY: all test test-all test-link test-fasl-images test-lib test-static test-system test-downstream npm test-ui test-asdf test-quicklisp test-mcclim test-swank test-threads repl selfhost fixpoint web site ansi clean
 
 all: build/clysm-native.wasm
 
@@ -94,6 +94,9 @@ test-all:
 
 web:
 	tools/build-web.sh
+
+site:
+	tools/build-site.sh
 
 # the ANSI test suite (third_party/ansi-test); results in build/ansi/
 ansi:

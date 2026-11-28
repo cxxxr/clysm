@@ -1,0 +1,52 @@
+# The playground (site/, tools/build-site.sh), published with GitHub Pages
+# at https://cxxxr.github.io/clysm/ from each commit of main.  A pull request
+# that changes it builds it and runs its samples (tests/site/samples.mjs).
+name: Pages
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - site/**
+      - tests/site/**
+      - tools/build-site.sh
+      - host/**
+      - lib/web-main.lisp
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: pages-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: ./.github/actions/sbcl
+      - name: Build the site
+        run: tools/build-site.sh
+      - name: Run the samples
+        run: node tests/site/samples.mjs
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
+        with:
+          path: build/site
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
