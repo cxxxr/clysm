@@ -471,6 +471,12 @@
 
 (defun %upgrade-element-type-1 (et subtypep)
   (declare (function subtypep))
+  ;; the categories of the canonical form of ET (runtime/subtypep.lisp, there
+  ;; with SUBTYPEP); SUBTYPEP of each element type for the types it cannot
+  ;; represent
+  (let* ((by-canon (%symbol-function (%weak-symbol %upgrade-by-canon)))
+         (u (if by-canon (funcall by-canon et) :unknown)))
+    (unless (eq u :unknown) (return-from %upgrade-element-type-1 u)))
   (cond ((funcall subtypep et nil) nil)
         ((funcall subtypep et 'character) 'character)
         ((funcall subtypep et 'bit) 'bit)
